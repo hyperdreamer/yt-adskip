@@ -5,7 +5,7 @@
   "minimum_chrome_version": "96",
   "author": "hyperdreamer",
   "homepage_url": "https://github.com/hyperdreamer/yt-adskip",
-  "description": "Automatically clicks YouTube's Skip Ad button when it appears.",
+  "description": "Automatically skips YouTube ads by speeding through them.",
   "permissions": [
     "storage"
   ],

@@ -27,6 +27,12 @@
   let wasMuted = false;
   let initialized = false;
 
+  // Event listener references for idempotent re-hook on SPA navigation.
+  let adStartHandler = null;
+  let adFinishHandler = null;
+  let hookRetries = 0;
+  const MAX_HOOK_RETRIES = 40; // ~20 s max wait for #movie_player
+
   // ---------------------------------------------------------------------------
   // Ad detection
   // ---------------------------------------------------------------------------
@@ -162,57 +168,82 @@
   }
 
   // ---------------------------------------------------------------------------
-  // YouTube native events
+  // YouTube native events — idempotent, cleans up old listeners on SPA nav
   // ---------------------------------------------------------------------------
 
   function hookYouTubeEvents() {
     const player = document.getElementById('movie_player');
-    if (!player) { setTimeout(hookYouTubeEvents, 500); return; }
+    if (!player) {
+      if (hookRetries++ < MAX_HOOK_RETRIES) {
+        setTimeout(hookYouTubeEvents, 500);
+      }
+      return;
+    }
+    hookRetries = 0;
 
-    player.addEventListener('onAdStart', () => {
+    // Remove old listeners before re-attaching (SPA-safe)
+    if (adStartHandler) player.removeEventListener('onAdStart', adStartHandler);
+    if (adFinishHandler) player.removeEventListener('onAdFinish', adFinishHandler);
+
+    adStartHandler = function () {
       if (!enabled) return;
       adStartTime = Date.now();
-    });
-
-    player.addEventListener('onAdFinish', () => {
+    };
+    adFinishHandler = function () {
       adStartTime = 0;
       restorePlayback();
-    });
+    };
+
+    player.addEventListener('onAdStart', adStartHandler);
+    player.addEventListener('onAdFinish', adFinishHandler);
   }
 
   // ---------------------------------------------------------------------------
-  // Stats
+  // Stats — debounced writes to chrome.storage.local
   // ---------------------------------------------------------------------------
 
   let pendingSkips = 0;
   let flushTimer = null;
 
+  function flushStats() {
+    const toAdd = pendingSkips;
+    pendingSkips = 0;
+    if (toAdd === 0) return;
+    try {
+      chrome.storage.local.get(['stats', 'today'], function (data) {
+        const prevS = (data && data.stats) || { totalSkips: 0, lastSkipTime: null };
+        const stats = {
+          totalSkips: (prevS.totalSkips || 0) + toAdd,
+          lastSkipTime: Date.now()
+        };
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const prevT = (data && data.today) || { date: todayKey, count: 0 };
+        const today = {
+          date: todayKey,
+          count: (prevT.date === todayKey ? prevT.count : 0) + toAdd
+        };
+        chrome.storage.local.set({ stats: stats, today: today });
+      });
+    } catch (_) {}
+  }
+
   function bumpStats() {
     pendingSkips++;
     if (flushTimer) return;
-    flushTimer = setTimeout(() => {
-      const toAdd = pendingSkips;
-      pendingSkips = 0;
+    flushTimer = setTimeout(function () {
       flushTimer = null;
-      if (toAdd === 0) return;
-      try {
-        chrome.storage.local.get(['stats', 'today'], (data) => {
-          const prevS = (data && data.stats) || { totalSkips: 0, lastSkipTime: null };
-          const stats = {
-            totalSkips: (prevS.totalSkips || 0) + toAdd,
-            lastSkipTime: Date.now()
-          };
-          const todayKey = new Date().toISOString().slice(0, 10);
-          const prevT = (data && data.today) || { date: todayKey, count: 0 };
-          const today = {
-            date: todayKey,
-            count: (prevT.date === todayKey ? prevT.count : 0) + toAdd
-          };
-          chrome.storage.local.set({ stats, today });
-        });
-      } catch (_) {}
+      flushStats();
     }, 500);
   }
+
+  // Flush any pending stats before the page unloads (e.g. SPA navigation away).
+  window.addEventListener('beforeunload', function () {
+    if (flushTimer) {
+      clearTimeout(flushTimer);
+      flushTimer = null;
+    }
+    flushStats();
+  });
 
   // ---------------------------------------------------------------------------
   // Enable/disable
@@ -221,15 +252,15 @@
   function enable()  { enabled = true; }
   function disable() { enabled = false; adStartTime = 0; restorePlayback(); }
 
+  // ---------------------------------------------------------------------------
+  // Storage listener — single handler for all keys
+  // ---------------------------------------------------------------------------
+
   try {
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || !changes.enabled) return;
-      changes.enabled.newValue ? enable() : disable();
-    });
-    // Listen for debug overlay toggle
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || !changes.debugOverlay) return;
-      setDebugOverlay(changes.debugOverlay.newValue);
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== 'local') return;
+      if (changes.enabled) changes.enabled.newValue ? enable() : disable();
+      if (changes.debugOverlay) setDebugOverlay(changes.debugOverlay.newValue);
     });
   } catch (_) {}
 
@@ -243,7 +274,7 @@
     hookYouTubeEvents();
     pollTimer = setInterval(trySkipAd, POLL_INTERVAL_MS);
 
-    document.addEventListener('yt-navigate-finish', () => {
+    document.addEventListener('yt-navigate-finish', function () {
       adStartTime = 0;
       hookYouTubeEvents();
     });
@@ -252,7 +283,7 @@
   // Start immediately, check persisted state async
   startAll();
   try {
-    chrome.storage.local.get(['enabled', 'debugOverlay'], (data) => {
+    chrome.storage.local.get(['enabled', 'debugOverlay'], function (data) {
       if (data && data.enabled === false) disable();
       if (data && data.debugOverlay) setDebugOverlay(true);
     });

@@ -79,10 +79,8 @@ yt-adskip/
 ├── icons/
 │   ├── icon16.png
 │   ├── icon48.png
-│   └── icon128.png
-├── AGENTS.md              # Architecture spec (seeking-based)
-├── CLAUDE.md              # Original architecture sketch
-└── README.md              # This file
+│   ├── icon128.png
+├── README.md
 ```
 
 ## Privacy
