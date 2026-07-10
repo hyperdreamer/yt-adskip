@@ -2,7 +2,7 @@
  * YT AdSkip - Popup Script
  *
  * Renders the toggle switch and live stats from chrome.storage.local.
- * Writes the enabled/disabled state on toggle.
+ * Uses onChanged listener for instant updates instead of polling.
  */
 
 (function () {
@@ -10,13 +10,16 @@
 
   const $ = (id) => document.getElementById(id);
 
-  const toggleEl   = $('enabled');
-  const labelEl    = $('enabled-label');
-  const statusEl   = document.querySelector('.status');
+  const toggleEl = $('enabled');
+  const labelEl  = $('enabled-label');
+  const statusEl = $('status');
   const statusText = $('status-text');
-  const todayEl    = $('stat-today');
-  const totalEl    = $('stat-total');
-  const lastEl     = $('stat-last');
+  const todayEl = $('stat-today');
+  const totalEl = $('stat-total');
+  const lastEl  = $('stat-last');
+
+  // Periodic refresh for relative-time display ("2 min ago") that ages.
+  let relativeTimer = null;
 
   function formatRelative(ts) {
     if (!ts || typeof ts !== 'number') return 'never';
@@ -38,10 +41,10 @@
     return n.toLocaleString();
   }
 
-  function applyEnabledState(enabled) {
-    toggleEl.checked = !!enabled;
-    labelEl.textContent = enabled ? 'Enabled' : 'Disabled';
-    if (enabled) {
+  function applyEnabledState(flag) {
+    toggleEl.checked = !!flag;
+    labelEl.textContent = flag ? 'Enabled' : 'Disabled';
+    if (flag) {
       statusEl.classList.remove('paused');
       statusEl.classList.add('active');
       statusText.textContent = 'Active';
@@ -60,6 +63,11 @@
 
   function readState() {
     chrome.storage.local.get(['enabled', 'stats', 'today'], (data) => {
+      const lastError = chrome.runtime.lastError;
+      if (lastError) {
+        console.error('YT AdSkip: storage read failed', lastError);
+        return;
+      }
       applyEnabledState(data && data.enabled !== false);
       renderStats(data && data.stats, data && data.today);
     });
@@ -68,14 +76,38 @@
   function onToggle() {
     const next = !!toggleEl.checked;
     chrome.storage.local.set({ enabled: next }, () => {
+      if (chrome.runtime.lastError) {
+        console.error('YT AdSkip: storage write failed', chrome.runtime.lastError);
+        toggleEl.checked = !next; // revert UI
+        return;
+      }
       applyEnabledState(next);
     });
   }
 
   toggleEl.addEventListener('change', onToggle);
 
-  // Refresh stats every second so the "last skip" relative time stays current
-  // and so skips fired in the content script are visible without re-opening.
-  setInterval(readState, 1000);
+  // Listen for storage changes from content script (instant updates).
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local') return;
+    if (changes.enabled) applyEnabledState(changes.enabled.newValue);
+    if (changes.stats || changes.today) readState();
+  });
+
+  // Slow periodic refresh only for the "last skip" relative time,
+  // which ages even when the storage value doesn't change.
+  relativeTimer = setInterval(() => {
+    chrome.storage.local.get(['stats'], (data) => {
+      if (!chrome.runtime.lastError) {
+        lastEl.textContent = formatRelative(data && data.stats && data.stats.lastSkipTime);
+      }
+    });
+  }, 10000);
+
+  // Clean up on unload.
+  window.addEventListener('unload', () => {
+    if (relativeTimer) clearInterval(relativeTimer);
+  });
+
   readState();
 })();

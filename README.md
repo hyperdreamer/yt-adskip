@@ -39,15 +39,16 @@ YouTube injects the skip button into the DOM as soon as an ad becomes
 skippable. The content script (`content.js`):
 
 1. Watches `document.body` with a `MutationObserver` and a 25 ms debounce.
-2. Runs a multi-selector fallback chain against the player's known button
+2. Also watches `#movie_player` for `ad-showing`/`ad-interrupting` class changes.
+3. Runs a multi-selector fallback chain against the player's known button
    classes (`.ytp-ad-skip-button-modern`, `.ytp-ad-skip-button`,
    `.ytp-skip-ad-button`, etc.) plus a final text-match fallback.
-3. Validates each candidate before clicking (visible, enabled, non-zero
+4. Validates each candidate before clicking (visible, enabled, non-zero
    size, attached to the DOM, not already clicked).
-4. Clicks the button once, then briefly pauses the observer to avoid
+5. Clicks the button once, then briefly pauses the observer to avoid
    re-triggering on the post-click DOM churn.
-5. A 2-second polling timer covers any edge cases the observer misses.
-6. `yt-navigate-finish` and `yt-page-data-updated` events re-run detection
+6. A 1-second polling timer covers any edge cases the observers miss.
+7. `yt-navigate-finish` and `yt-page-data-updated` events re-run detection
    after every SPA navigation so the script stays effective as you move
    between videos.
 

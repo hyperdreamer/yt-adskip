@@ -17,20 +17,20 @@
   // Configuration
   // ---------------------------------------------------------------------------
 
-  const DEBUG = false; // Set to true for verbose console logging
+  const DEBUG = false;
 
-  const POLL_INTERVAL_MS = 1000;     // Polling fallback cadence
-  const DEBOUNCE_MS = 25;            // MutationObserver debounce
-  const POST_CLICK_PAUSE_MS = 100;   // Brief observer pause after a click
+  const POLL_INTERVAL_MS = 1000;
+  const DEBOUNCE_MS = 25;
+  const POST_CLICK_PAUSE_MS = 100;
 
   // Selector chain, priority order (AGENTS.md §4.1).
   const SKIP_SELECTORS = [
-    '.ytp-ad-skip-button-modern',               // 1. Current
-    '.ytp-ad-skip-button',                      // 2. Stable fallback
-    '.ytp-skip-ad-button',                      // 3. Legacy
-    'button.ytp-ad-skip-button-modern',         // 4. Tag-qualified
-    '.ytp-ad-text button',                      // 5. Text-context
-    'button'                                    // 6. base for text-match fallback
+    '.ytp-ad-skip-button-modern',
+    '.ytp-ad-skip-button',
+    '.ytp-skip-ad-button',
+    'button.ytp-ad-skip-button-modern',
+    '.ytp-ad-text button',
+    'button'   // base for text-match fallback
   ];
 
   // Quick-check selectors for mutation filtering (§4.6).
@@ -42,8 +42,19 @@
     '.ytp-ad-preview-text'
   ].join(', ');
 
-  // Text fragments to match a "skip" button (§4.3).
-  const SKIP_TEXT_FRAGMENTS = ['skip', 'skip ad', 'skip ads'];
+  // Text fragments for text-match fallback (§4.3).
+  // English + common YouTube localizations.
+  const SKIP_TEXT_FRAGMENTS = [
+    'skip', 'skip ad', 'skip ads',        // English
+    'überspringen', 'überspringen anzeige', // German
+    'saltar', 'saltar anuncio',            // Spanish
+    'pular', 'pular anúncio',              // Portuguese
+    'ignora', 'ignora annuncio',           // Italian
+    'passer', 'passer annonce',            // French
+    ' überslaan',                           // Dutch
+    ' пропустить',                          // Russian
+    ' スキップ',                             // Japanese
+  ];
 
   // ---------------------------------------------------------------------------
   // State
@@ -57,11 +68,16 @@
   let resumeTimer = null;
   let initialized = false;
 
-  // Per-button-instance click tracking (§4.4).
+  // In-memory accumulator to avoid read-modify-write races on stats.
+  // Flushed to storage on a debounced timer.
+  let pendingSkipIncrement = 0;
+  let flushStatsTimer = null;
+  const STATS_FLUSH_MS = 500;
+
   const clickedButtons = new WeakSet();
 
   // ---------------------------------------------------------------------------
-  // Logging helpers
+  // Logging
   // ---------------------------------------------------------------------------
 
   function log(...args) {
@@ -85,6 +101,18 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Ad-state helper
+  // ---------------------------------------------------------------------------
+
+  function isAdPlaying() {
+    const player = document.getElementById('movie_player');
+    return player && (
+      player.classList.contains('ad-showing') ||
+      player.classList.contains('ad-interrupting')
+    );
+  }
+
+  // ---------------------------------------------------------------------------
   // Button validation (§4.2)
   // ---------------------------------------------------------------------------
 
@@ -92,12 +120,12 @@
     if (!el) return false;
     if (clickedButtons.has(el)) return false;
     if (!document.contains(el)) return false;
-    if (el.offsetParent === null) return false;            // display:none or not rendered
-    if (el.disabled) return false;                          // native disabled
+    if (el.offsetParent === null) return false;
+    if (el.disabled) return false;
     if (el.getAttribute('aria-disabled') === 'true') return false;
     if (el.getAttribute('aria-hidden') === 'true') return false;
     if (!(el.offsetWidth > 0 && el.offsetHeight > 0)) return false;
-    // Check if button is inside the ad player overlay (not a random "Skip" elsewhere)
+    // Must be inside the player, not a random "Skip" elsewhere.
     const inPlayer = el.closest('#movie_player');
     if (!inPlayer) return false;
     return true;
@@ -108,6 +136,9 @@
   // ---------------------------------------------------------------------------
 
   function findSkipButton() {
+    // Only run expensive scans when an ad is likely playing.
+    if (!isAdPlaying()) return null;
+
     // Selectors 1-5: direct class/tag matches.
     for (let i = 0; i < SKIP_SELECTORS.length - 1; i++) {
       const el = document.querySelector(SKIP_SELECTORS[i]);
@@ -131,7 +162,7 @@
     try {
       button.click();
       clickedButtons.add(button);
-      log('clicked skip button', button);
+      log('clicked skip button');
       bumpStats();
       return true;
     } catch (err) {
@@ -144,8 +175,7 @@
     if (!enabled) return;
     const button = findSkipButton();
     if (button) {
-      const clicked = clickSkipButton(button);
-      if (clicked) {
+      if (clickSkipButton(button)) {
         pauseObserversBriefly();
       }
     }
@@ -176,9 +206,7 @@
     if (!enabled) return;
     if (!mutationContainsAdElement(mutations)) return;
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      findAndClickSkipButton();
-    }, DEBOUNCE_MS);
+    debounceTimer = setTimeout(findAndClickSkipButton, DEBOUNCE_MS);
   }
 
   function startBodyObserver() {
@@ -190,22 +218,18 @@
       attributes: false,
       characterData: false
     });
-    log('body MutationObserver started');
+    log('body observer started');
   }
 
   function stopBodyObserver() {
     if (bodyObserver) {
       bodyObserver.disconnect();
       bodyObserver = null;
-      log('body MutationObserver stopped');
     }
   }
 
   // ---------------------------------------------------------------------------
-  // MutationObserver — #movie_player (class/attribute changes)
-  // YouTube toggles ad-showing / ad-interrupting classes on #movie_player
-  // to indicate ad playback. Watching these catches ads that were pre-loaded
-  // in the DOM and revealed via class changes (missed by childList observer).
+  // MutationObserver — #movie_player (class changes)
   // ---------------------------------------------------------------------------
 
   function onPlayerMutation(mutations) {
@@ -215,45 +239,51 @@
         const player = mutation.target;
         if (player.classList.contains('ad-showing') ||
             player.classList.contains('ad-interrupting')) {
-          log('player entered ad state, scanning for skip button');
+          log('player entered ad state');
           findAndClickSkipButton();
+          break; // Found the ad state — done with this batch
         }
-        break; // One class change is enough
+        // Don't break here — keep checking remaining mutation records
       }
     }
   }
 
   function startPlayerObserver() {
-    if (playerObserver) return;
     const player = document.getElementById('movie_player');
-    if (!player) {
-      // Player not yet in DOM — body observer will catch it
-      return;
+    if (!player) return;
+
+    // If we already have an observer on this element, skip.
+    // If the observed element changed (SPA navigation recreates #movie_player),
+    // disconnect the old one and create a fresh observer.
+    if (playerObserver) {
+      // Check if current player is different from the observed one.
+      // MutationObserver doesn't expose its target, so we disconnect
+      // and reconnect unconditionally — it's cheap.
+      playerObserver.disconnect();
+      playerObserver = null;
     }
+
     playerObserver = new MutationObserver(onPlayerMutation);
     playerObserver.observe(player, {
       attributes: true,
       attributeFilter: ['class']
     });
-    log('player MutationObserver started on #movie_player');
+    log('player observer started on #movie_player');
   }
 
   function stopPlayerObserver() {
     if (playerObserver) {
       playerObserver.disconnect();
       playerObserver = null;
-      log('player MutationObserver stopped');
     }
   }
 
-  // Try to start the player observer — if the player isn't ready yet,
-  // the body observer's childList will catch it, and we retry on next check.
   function ensurePlayerObserver() {
-    if (!playerObserver) startPlayerObserver();
+    startPlayerObserver();
   }
 
   // ---------------------------------------------------------------------------
-  // Pause / resume observers
+  // Pause / resume
   // ---------------------------------------------------------------------------
 
   function pauseObserversBriefly() {
@@ -276,7 +306,6 @@
     if (pollTimer !== null) return;
     pollTimer = setInterval(() => {
       if (!enabled) return;
-      ensurePlayerObserver(); // retry if player wasn't ready at init
       findAndClickSkipButton();
     }, POLL_INTERVAL_MS);
     log('polling started (', POLL_INTERVAL_MS, 'ms)');
@@ -286,7 +315,6 @@
     if (pollTimer !== null) {
       clearInterval(pollTimer);
       pollTimer = null;
-      log('polling stopped');
     }
   }
 
@@ -331,27 +359,39 @@
     stopPolling();
     clearTimeout(debounceTimer);
     clearTimeout(resumeTimer);
+    clearTimeout(flushStatsTimer);
+    pendingSkipIncrement = 0;
   }
 
   // ---------------------------------------------------------------------------
-  // Stats (§5)
+  // Stats (§5) — in-memory accumulator to avoid read-modify-write races
   // ---------------------------------------------------------------------------
 
   function bumpStats() {
+    pendingSkipIncrement++;
+    if (flushStatsTimer) return; // already scheduled
+    flushStatsTimer = setTimeout(flushStats, STATS_FLUSH_MS);
+  }
+
+  function flushStats() {
+    flushStatsTimer = null;
+    const toAdd = pendingSkipIncrement;
+    pendingSkipIncrement = 0;
+    if (toAdd === 0) return;
+
     try {
       chrome.storage.local.get(['stats', 'today'], (data) => {
         const prevStats = (data && data.stats) || { totalSkips: 0, lastSkipTime: null };
         const stats = {
-          totalSkips: (prevStats.totalSkips || 0) + 1,
+          totalSkips: (prevStats.totalSkips || 0) + toAdd,
           lastSkipTime: Date.now()
         };
 
-        // Also increment today's count, handling date rollover.
         const todayKey = new Date().toISOString().slice(0, 10);
         const prevToday = (data && data.today) || { date: todayKey, count: 0 };
         const today = {
           date: todayKey,
-          count: (prevToday.date === todayKey ? prevToday.count : 0) + 1
+          count: (prevToday.date === todayKey ? prevToday.count : 0) + toAdd
         };
 
         chrome.storage.local.set({ stats, today });
@@ -369,8 +409,7 @@
     try {
       chrome.storage.onChanged.addListener((changes, area) => {
         if (area !== 'local' || !changes.enabled) return;
-        const next = changes.enabled.newValue;
-        if (next) enable();
+        if (changes.enabled.newValue) enable();
         else disable();
       });
     } catch (err) {
@@ -382,7 +421,7 @@
   // Initialization (§4.10)
   // ---------------------------------------------------------------------------
 
-  function initObservers() {
+  function startAll() {
     if (initialized) return;
     initialized = true;
     startBodyObserver();
@@ -391,28 +430,29 @@
     registerNavigationListeners();
     registerStorageListener();
 
-    // Immediate check — if an ad is already showing.
-    const player = document.getElementById('movie_player');
-    if (player && (player.classList.contains('ad-showing') ||
-                   player.classList.contains('ad-interrupting'))) {
+    if (isAdPlaying()) {
       findAndClickSkipButton();
     }
   }
 
   function init() {
-    // Start observers IMMEDIATELY (synchronous) — don't wait for storage read.
-    // Default to enabled; storage listener will correct if user had disabled.
-    initObservers();
-
-    // Read persisted enabled state asynchronously to correct if needed.
+    // Read persisted state FIRST, then start observers.
+    // This eliminates the race where a returning user who disabled the
+    // extension sees it re-enabled briefly on every page load.
     try {
       chrome.storage.local.get(['enabled'], (data) => {
         if (data && data.enabled === false) {
-          disable();
+          enabled = false;
+          // Still register the listener so user can re-enable via popup.
+          registerStorageListener();
+          return;
         }
+        startAll();
       });
     } catch (err) {
-      log('storage read failed, staying enabled', err);
+      // Fallback: default to enabled.
+      log('storage read failed, defaulting to enabled', err);
+      startAll();
     }
   }
 

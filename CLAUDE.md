@@ -1,4 +1,6 @@
-# YT AdSkip — Chrome Extension Architecture
+# YT AdSkip — Chrome Extension Architecture (HISTORICAL)
+
+> **⚠️ This is the original architecture sketch. For the current, detailed spec, see [AGENTS.md](./AGENTS.md).**
 
 ## Overview
 A Chrome Manifest V3 extension that automatically clicks YouTube's "Skip Ad" button

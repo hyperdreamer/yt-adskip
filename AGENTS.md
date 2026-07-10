@@ -268,6 +268,10 @@ The popup and content script share state via `chrome.storage.local`.
   "stats": {
     "totalSkips": 0,            // number — lifetime skip count
     "lastSkipTime": null        // number | null — Date.now() of last skip
+  },
+  "today": {
+    "date": "2026-07-10",       // string — YYYY-MM-DD date key
+    "count": 0                  // number — skips for the current day
   }
 }
 ```
