@@ -10,7 +10,7 @@ as soon as it becomes available. Does NOT block ads — only clicks the skip but
 
 ### Components
 1. **manifest.json** — MV3 extension manifest
-   - Permissions: scripting, activeTab (or host_permissions for youtube.com)
+   - Permissions: storage
    - Content script injected into `*://www.youtube.com/*`
    - Run at `document_idle`
 
@@ -20,7 +20,7 @@ as soon as it becomes available. Does NOT block ads — only clicks the skip but
      - The button with class `.ytp-ad-skip-button` or `.ytp-skip-ad-button`
      - Or the text "Skip" / "Skip Ad" in a button within `.ytp-ad-text`
    - When detected, clicks it immediately
-   - Polling fallback every 500ms as a safety net
+   - Polling fallback every 1000ms as a safety net
    - Handles SPA navigation (YouTube uses history.pushState)
 
 3. **popup/** (optional) — Popup UI
@@ -35,7 +35,7 @@ as soon as it becomes available. Does NOT block ads — only clicks the skip but
   - `.ytp-skip-ad-button`
   - Any button containing text "Skip" or "Skip Ad" within the ad overlay
 - **Navigation handling**: Listen for `yt-navigate-finish` event (YouTube's custom SPA event)
-- **Interval fallback**: `setInterval` every 500ms as backup
+- **Interval fallback**: `setInterval` every 1000ms as backup
 
 ### Files
 ```
