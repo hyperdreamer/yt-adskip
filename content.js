@@ -157,12 +157,32 @@
     if (!button) return false;
     if (clickedButtons.has(button)) return false;
     try {
-      // Dispatch realistic mouse events — YouTube may ignore bare .click().
-      const opts = { bubbles: true, cancelable: true, view: window };
-      button.dispatchEvent(new MouseEvent('mousedown', opts));
-      button.dispatchEvent(new MouseEvent('mouseup', opts));
-      button.dispatchEvent(new MouseEvent('click', opts));
+      // Dispatch full event sequence to mimic a real user click.
+      // YouTube may ignore isolated .click() or basic MouseEvents.
+      const rect = button.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const init = {
+        bubbles: true, cancelable: true, view: window,
+        clientX: cx, clientY: cy, screenX: cx, screenY: cy,
+        button: 0, buttons: 1
+      };
+
       button.focus();
+      button.dispatchEvent(new PointerEvent('pointerdown', init));
+      button.dispatchEvent(new MouseEvent('mousedown', init));
+      button.dispatchEvent(new PointerEvent('pointerup', init));
+      button.dispatchEvent(new MouseEvent('mouseup', init));
+      button.dispatchEvent(new MouseEvent('click', init));
+
+      // Also try YouTube's internal ad click handler as fallback.
+      try {
+        const player = document.getElementById('movie_player');
+        if (player && typeof player.onAdUxClicked === 'function') {
+          player.onAdUxClicked();
+        }
+      } catch (_) { /* internal API may change */ }
+
       clickedButtons.add(button);
       log('clicked skip button');
       bumpStats();
