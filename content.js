@@ -136,9 +136,6 @@
   // ---------------------------------------------------------------------------
 
   function findSkipButton() {
-    // Only run expensive scans when an ad is likely playing.
-    if (!isAdPlaying()) return null;
-
     // Selectors 1-5: direct class/tag matches.
     for (let i = 0; i < SKIP_SELECTORS.length - 1; i++) {
       const el = document.querySelector(SKIP_SELECTORS[i]);
@@ -436,23 +433,25 @@
   }
 
   function init() {
-    // Read persisted state FIRST, then start observers.
-    // This eliminates the race where a returning user who disabled the
-    // extension sees it re-enabled briefly on every page load.
+    // Start observers IMMEDIATELY — don't wait for async storage.
+    // The callback corrects state if user had previously disabled.
+    startAll();
+
+    // Check persisted state to possibly disable.
     try {
+      const storageTimeout = setTimeout(() => {
+        // Callback didn't fire — stay enabled (safe default).
+        log('storage read timed out, staying enabled');
+      }, 3000);
+
       chrome.storage.local.get(['enabled'], (data) => {
+        clearTimeout(storageTimeout);
         if (data && data.enabled === false) {
-          enabled = false;
-          // Still register the listener so user can re-enable via popup.
-          registerStorageListener();
-          return;
+          disable();
         }
-        startAll();
       });
     } catch (err) {
-      // Fallback: default to enabled.
-      log('storage read failed, defaulting to enabled', err);
-      startAll();
+      log('storage read failed, staying enabled', err);
     }
   }
 
