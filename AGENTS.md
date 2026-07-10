@@ -1,19 +1,24 @@
 # AGENTS.md — YouTube Ad-Skip Chrome Extension Spec
 
 > **Target**: Manifest V3 Chrome Extension  
-> **Purpose**: Automatically click YouTube's "Skip Ad" button when it appears.  
-> **Non-goal**: Does NOT block ads, hide ads, fast-forward ads, or mute ads.  
+> **Approach**: Seeking-based ad skip — bypasses YouTube's `isTrusted` click rejection via video manipulation.  
+> **Non-goal**: Does NOT block or hide ads — only speeds through them.  
 > **Constraint**: Pure vanilla JS, no build tooling, no external dependencies, no tracking.
 
 ---
 
-## 1. Design Principles
+## 1. Core Design Decision: Why Clicking Doesn't Work
 
-1. **Minimal intervention** — only click the skip button; never modify video playback, volume, or DOM structure.
-2. **Observer-first, poll-second** — MutationObserver is the primary detection path; setInterval is a safety net only.
-3. **Resilient to YouTube changes** — multi-selector fallback chain, graceful degradation, no single point of selector failure.
-4. **SPA-aware** — YouTube never does full page reloads; every navigation is an SPA transition.
-5. **Silent operation** — no visible UI on the page, no console spam in production, no user-facing notifications.
+YouTube's skip button handler **requires `isTrusted: true` click events**. Every
+programmatic click approach — `el.click()`, `PointerEvent` dispatch, full
+`MouseEvent` sequence, React synthetic event probing — has been tried and
+rejected by YouTube's framework. The extension **cannot** trigger the skip
+button via DOM events.
+
+**Solution**: Bypass the DOM event system entirely. Manipulate the `<video>`
+element directly — speed up playback to 16×, seek to the end of the ad, then
+restore normal playback. This achieves the same result (ad skipped) without
+ever touching the skip button.
 
 ---
 
@@ -22,7 +27,7 @@
 ```
 yt-adskip/
 ├── manifest.json          # MV3 extension manifest
-├── content.js             # Content script: DOM observer + skip logic
+├── content.js             # Content script: ad detection + seek skip
 ├── popup/
 │   ├── popup.html         # Extension popup UI
 │   ├── popup.js           # Popup logic: toggle, stats
@@ -38,227 +43,199 @@ yt-adskip/
 
 ---
 
-## 3. manifest.json Spec
+## 3. manifest.json
 
 ```jsonc
 {
   "manifest_version": 3,
   "name": "YT AdSkip",
   "version": "1.0.0",
-  "description": "Automatically clicks YouTube's Skip Ad button when it appears.",
+  "description": "Automatically skips YouTube ads by speeding through them.",
   "permissions": ["storage"],
   "host_permissions": ["*://www.youtube.com/*"],
-  "content_scripts": [
-    {
-      "matches": ["*://www.youtube.com/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    }
-  ],
+  "content_scripts": [{
+    "matches": ["*://www.youtube.com/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
   "action": {
     "default_popup": "popup/popup.html",
     "default_title": "YT AdSkip",
-    "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
-    }
+    "default_icon": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
   },
-  "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
-  }
+  "icons": { "16": "icons/icon16.png", "48": "icons/icon48.png", "128": "icons/icon128.png" }
 }
 ```
 
-### Key manifest decisions:
-- **`permissions: ["storage"]`** — only permission needed; used for the on/off toggle state.
-- **`host_permissions`** — scoped strictly to `www.youtube.com`. No broad `*://*/*` permissions.
-- **`content_scripts` injection** — `document_idle` ensures the DOM (including the `#movie_player`) is fully parsed before the script runs. This is equivalent to `DOMContentLoaded` but accounts for deferred resources.
-- **No `scripting` permission** — not needed; we use declarative `content_scripts` injection rather than `chrome.scripting.executeScript()`.
-- **No `background.service_worker`** — the content script handles everything; popup reads/writes `chrome.storage.local` directly.
+Key decisions:
+- **`permissions: ["storage"]`** — for the on/off toggle state and skip stats.
+- **`host_permissions`** — scoped to `www.youtube.com` only.
+- **`run_at: "document_idle"`** — ensures `#movie_player` and `<video>` are present.
+- **No `scripting` permission** — declarative content_scripts injection is sufficient.
+- **No service worker** — content script handles everything; popup reads/writes storage directly.
 
 ---
 
-## 4. Content Script (`content.js`) — Detailed Spec
+## 4. Content Script (`content.js`)
 
-### 4.1 Core Skip Button Selector Chain
+### 4.1 Ad Detection — Three-Layer Strategy
 
-Apply selectors in this exact priority order. The first matching, visible, enabled button wins:
+#### Layer 1: YouTube's Internal API (Primary)
+```js
+function getAdState() {
+  const p = document.getElementById('movie_player');
+  return p && typeof p.getAdState === 'function' ? p.getAdState() : -1;
+}
+```
+`getAdState()` returns `-1` when no ad is playing, `>= 0` during an ad.
+This is the most reliable detection method.
 
-| Priority | Selector | Status | Notes |
-|----------|----------|--------|-------|
-| 1 | `.ytp-ad-skip-button-modern` | Current (2025–2026) | Modern YouTube UI skip button |
-| 2 | `.ytp-ad-skip-button` | Stable fallback | Has existed for years, still present as base class |
-| 3 | `.ytp-skip-ad-button` | Legacy | Older class name; keep for backward compatibility |
-| 4 | `button.ytp-ad-skip-button-modern` | Tag-qualified | More specific variant of #1 |
-| 5 | `.ytp-ad-text button` | Text-based | Button inside the ad text container — catches any Skip/Skip Ad button by context |
-| 6 | `button:has-text("Skip")` | Text content | Last-resort text-match fallback (see §4.3 for `:has-text` polyfill) |
+#### Layer 2: CSS Class Checks (Fallback)
+```js
+function isAdPlaying() {
+  if (getAdState() !== -1) return true;
+  const player = document.getElementById('movie_player');
+  return player && (
+    player.classList.contains('ad-showing') ||
+    player.classList.contains('ad-interrupting')
+  );
+}
+```
+When `getAdState()` is unavailable, fall back to the well-known CSS classes
+YouTube applies to `#movie_player` during ad playback.
 
-### 4.2 Input Validation (Before Clicking)
+#### Layer 3: YouTube Player Events
+```js
+player.addEventListener('onAdStart', () => { adStartTime = Date.now(); });
+player.addEventListener('onAdFinish', () => { adStartTime = 0; restorePlayback(); });
+```
+YouTube's native `onAdStart` and `onAdFinish` events provide reliable
+ad-lifecycle boundaries. Used to set/clear ad state and trigger playback restore.
 
-**Never click a button that hasn't passed ALL of these checks:**
-
-1. **Exists** — `el !== null`
-2. **Visible** — `el.offsetParent !== null` (catches `display: none` and `visibility: hidden` elements positioned off-screen via `position: absolute; top: -9999px`)
-3. **Enabled** — `!el.disabled` and `el.getAttribute('aria-disabled') !== 'true'`
-4. **Non-zero dimensions** — `el.offsetWidth > 0 && el.offsetHeight > 0` (catches `width: 0; height: 0` hidden buttons)
-5. **In the DOM** — `document.contains(el)` (catches detached nodes)
-
-### 4.3 `:has-text()` Polyfill
-
-Since `:has-text()` is not a native CSS selector, implement a helper:
+### 4.2 Main Loop — Polling at 250 ms
 
 ```js
-function querySelectorWithText(baseSelector, textStrings) {
-  const elements = document.querySelectorAll(baseSelector);
-  for (const el of elements) {
-    const text = el.textContent.trim().toLowerCase();
-    if (textStrings.some(s => text.includes(s.toLowerCase()))) {
-      return el;
-    }
+const POLL_INTERVAL_MS = 250;
+const PLAYBACK_SPEED = 16;
+const MIN_AD_BEFORE_SKIP_MS = 1000; // brief grace period before acting
+
+function trySkipAd() {
+  if (!enabled) return;
+  if (!isAdPlaying()) { adStartTime = 0; return; }
+  if (!adStartTime) { adStartTime = Date.now(); bumpStats(); return; }
+  if (Date.now() - adStartTime < MIN_AD_BEFORE_SKIP_MS) return;
+
+  tryClickSkipButton(); // best-effort, usually rejected
+  skipAd();
+}
+```
+
+The poll runs every 250 ms — fast enough to catch ad transitions quickly,
+slow enough to avoid triggering YouTube's anti-automation heuristics.
+
+### 4.3 Skip Strategy — Video Manipulation
+
+```js
+function skipAd() {
+  const video = document.querySelector('video');
+  if (!video || !isFinite(video.duration)) return false;
+
+  // Step 1: Speed up to 16x and mute
+  if (video.playbackRate !== PLAYBACK_SPEED) {
+    originalPlaybackRate = video.playbackRate || 1;
+    wasMuted = video.muted;
+    video.muted = true;
+    video.playbackRate = PLAYBACK_SPEED;
+    return true;
   }
-  return null;
-}
-```
 
-Call as: `querySelectorWithText('button', ['skip', 'skip ad', 'skip ads'])`
-
-### 4.4 Click Strategy
-
-When a valid skip button is found:
-
-1. **Only click once** — use a per-button-instance `WeakSet` to track already-clicked buttons so the same DOM node is never clicked twice.
-2. **Use trusted click simulation** — call `el.click()`. This works because content scripts execute in the page's "isolated world" and `click()` triggers the same listener chain as a real user click in YouTube's JavaScript context.
-3. **No repeated clicking** — after clicking, disconnect the observer briefly (100ms) to avoid re-triggering on any DOM churn YouTube does after the skip action.
-4. **Log to console in debug mode only** — gated behind a `DEBUG` flag (set to `false` in production).
-
-### 4.5 MutationObserver Configuration
-
-```js
-const observerConfig = {
-  childList: true,       // Watch for added/removed nodes
-  subtree: true,         // Watch entire DOM tree under target
-  attributes: false,     // Don't watch attribute changes (not needed)
-  characterData: false   // Don't watch text changes (overkill)
-};
-```
-
-**Target**: `document.body` — YouTube dynamically injects the ad UI anywhere within the `<body>`. Observing `document.body` with `subtree: true` catches all injections.
-
-**Debounce**: Use a trailing debounce of 25ms on the mutation callback. YouTube can batch-inject dozens of DOM nodes rapidly during ad transitions; processing every mutation individually wastes CPU. 25ms is below human perception (~40ms) so the skip still feels instant.
-
-**Debounced callback pseudocode**:
-```js
-let debounceTimer = null;
-function onMutation(mutations) {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    findAndClickSkipButton();
-  }, 25);
-}
-```
-
-### 4.6 MutationObserver Filtering for Performance
-
-Before running the full selector chain, do a cheap "quick check" against the added nodes:
-
-```js
-function mutationContainsAdElement(mutations) {
-  for (const mutation of mutations) {
-    for (const node of mutation.addedNodes) {
-      if (node.nodeType !== Node.ELEMENT_NODE) continue;
-      // Quick check: does this element or its children match ad-related selectors?
-      if (node.matches?.('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-text, .ytp-ad-preview-text')) return true;
-      if (node.querySelector?.('.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-text')) return true;
-    }
+  // Step 2: Seek near end to trigger ad completion
+  const target = Math.max(0, video.duration - 0.5);
+  if (target > video.currentTime + 0.5) {
+    video.currentTime = target;
+    return true;
   }
   return false;
 }
 ```
 
-Only run the full selector chain scan when this quick check passes. This avoids running `document.querySelectorAll` on every unrelated DOM change (e.g., chat messages, thumbnail loads).
+Two-step process:
+1. Set `playbackRate` to 16× and mute. Record original values for restore.
+2. Seek `currentTime` to near `duration` (0.5s from end). This triggers
+   YouTube to mark the ad as watched/completed.
 
-### 4.7 Polling Fallback (`setInterval`)
-
-The polling fallback runs at **2000ms** intervals (up from 500ms in the original sketch, per best practice to avoid triggering YouTube's anti-automation heuristics).
-
-The MutationObserver should catch 99% of skip buttons. The polling fallback exists for:
-- Edge cases where the observer misses an injection (e.g., if the observer is temporarily disconnected during a SPA transition)
-- YouTube A/B experiments that use non-standard injection timing
-
-**Implementation**: The interval timer is started once on script initialization and runs for the lifetime of the page. It is lightweight — a single `querySelector` call that returns `null` in the vast majority of ticks.
-
-### 4.8 SPA Navigation Handling
-
-YouTube is a single-page application. User navigations between videos, from homepage → watch page, from watch page → Shorts, etc. do NOT cause full page reloads. The content script must survive and stay effective across these transitions.
-
-**Strategy** — three layers:
-
-#### Layer 1: `yt-navigate-finish` Event (Primary)
-```js
-document.addEventListener('yt-navigate-finish', () => {
-  // Re-run skip button detection immediately after navigation
-  findAndClickSkipButton();
-});
-```
-This is YouTube's own custom event, fired after every SPA navigation completes. It is the most reliable signal.
-
-#### Layer 2: URL Change Detection via `yt-page-data-updated` (Secondary)
-```js
-document.addEventListener('yt-page-data-updated', () => {
-  findAndClickSkipButton();
-});
-```
-YouTube fires this after page data (including ad metadata) is loaded.
-
-#### Layer 3: MutationObserver Persistence (Always Active)
-The MutationObserver on `document.body` is never disconnected (except for the brief 100ms pause after a successful click). Since `document.body` is never replaced during SPA navigation (only its children change), the observer stays valid across all navigations with no re-initialization needed.
-
-**No `history.pushState`/`popstate` monkey-patching** — not needed because:
-1. YouTube's own events are more reliable and fire at the right time (after DOM is ready).
-2. Monkey-patching `history` methods is fragile and can conflict with YouTube's own code.
-
-### 4.9 Ad Detection for Context Awareness (Optional Enhancement)
-
-The `#movie_player` element receives CSS classes during ad playback:
-
-| Class on `#movie_player` | Meaning |
-|---|---|
-| `.ad-showing` | An ad is currently being displayed |
-| `.ad-interrupting` | An ad has interrupted playback (mid-roll) |
-
-These can be used to gate the full selector scan:
+### 4.4 Playback Restore
 
 ```js
-const player = document.getElementById('movie_player');
-if (player?.classList.contains('ad-showing') || player?.classList.contains('ad-interrupting')) {
-  // Ad is playing — run the full selector chain aggressively
-  findAndClickSkipButton();
+function restorePlayback() {
+  const video = document.querySelector('video');
+  if (!video) return;
+  if (video.playbackRate === PLAYBACK_SPEED) {
+    video.playbackRate = originalPlaybackRate || 1;
+    video.muted = wasMuted;
+  }
 }
 ```
 
-The MutationObserver quick-check (§4.6) makes this gating less critical, but it adds a useful semantic check.
+Called when the ad finishes (detected via polling or `onAdFinish`).
+Restores the video to its original `playbackRate` and mute state so the
+main content plays normally.
 
-### 4.10 Initialization Sequence
+### 4.5 Best-Effort Click (Harmless Fallback)
+
+```js
+function tryClickSkipButton() {
+  const btn = document.querySelector('.ytp-ad-skip-button-modern') ||
+              document.querySelector('.ytp-ad-skip-button') ||
+              document.querySelector('.ytp-skip-ad-button');
+  if (!btn || btn.offsetParent === null || btn.disabled) return;
+  try {
+    const r = btn.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const init = { bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: cx, clientY: cy, screenX: cx, screenY: cy, button: 0, buttons: 1 };
+    btn.dispatchEvent(new PointerEvent('pointerdown', { ...init, pointerType: 'mouse', pointerId: 1, isPrimary: true }));
+    btn.dispatchEvent(new MouseEvent('mousedown', init));
+    btn.dispatchEvent(new PointerEvent('pointerup', { ...init, pointerType: 'mouse', pointerId: 1, isPrimary: true }));
+    btn.dispatchEvent(new MouseEvent('mouseup', init));
+    btn.dispatchEvent(new MouseEvent('click', init));
+  } catch (_) {}
+}
+```
+
+Dispatches a full `PointerEvent` → `MouseEvent` sequence with computed
+coordinates. YouTube rejects these because `isTrusted` is `false`, but
+it costs nothing and might work if YouTube ever relaxes the check.
+
+### 4.6 SPA Navigation Handling
+
+```js
+document.addEventListener('yt-navigate-finish', () => {
+  adStartTime = 0;
+  hookYouTubeEvents(); // re-attach player event listeners
+});
+```
+
+YouTube never does full page reloads. `yt-navigate-finish` fires after
+every SPA transition. Reset ad state and re-hook the player events (the
+old `#movie_player` element may have been replaced).
+
+### 4.7 Initialization Sequence
 
 On content script load (`document_idle`):
 
-1. Read `chrome.storage.local` for the enabled/disabled state (default: `true`).
-2. If disabled, do nothing (do not start observer or interval).
-3. If enabled:
-   a. Start MutationObserver on `document.body`.
-   b. Start polling `setInterval` at 2000ms.
-   c. Register `yt-navigate-finish` and `yt-page-data-updated` event listeners.
-   d. Run `findAndClickSkipButton()` immediately (catches any ad already present at page load).
-4. Listen for `chrome.storage.onChanged` to dynamically enable/disable without page reload.
+1. Call `startAll()` immediately — start polling and hook player events.
+2. Asynchronously read `chrome.storage.local` for enabled/disabled state.
+3. If disabled, call `disable()` (clears ad state, restores playback).
+4. Register `chrome.storage.onChanged` listener for enable/disable toggle.
+
+The script starts enabled by default and corrects itself if the persisted
+state says otherwise. This avoids a flash where ads play for one poll cycle
+before the stored state is read.
 
 ---
 
 ## 5. State Management (`chrome.storage.local`)
-
-The popup and content script share state via `chrome.storage.local`.
 
 ### Storage Schema
 
@@ -271,227 +248,83 @@ The popup and content script share state via `chrome.storage.local`.
   },
   "today": {
     "date": "2026-07-10",       // string — YYYY-MM-DD date key
-    "count": 0                  // number — skips for the current day
-  }
+    "count": 0                  // number — skips for today
+  },
+  "debugOverlay": false         // boolean — show debug overlay
 }
 ```
 
 ### Cross-context Communication
 
-- **Popup → Content Script**: Popup writes `{ enabled: true/false }` to `chrome.storage.local`. Content script listens via `chrome.storage.onChanged`.
-- **Content Script → Popup**: Content script writes updated `stats` to `chrome.storage.local` after each successful skip. Popup reads on open.
+- **Popup → Content Script**: Popup writes `{ enabled: true/false }` to storage.
+  Content script listens via `chrome.storage.onChanged`.
+- **Content Script → Popup**: Content script writes updated `stats` after each ad
+  detection. Popup reads on open and listens via `onChanged`.
 
-### Disable/Enable Behavior
+### Disable Behavior
 
-When the user toggles `enabled` to `false`:
-- Content script disconnects the MutationObserver.
-- Content script clears the polling interval.
-- Event listeners remain registered (cheap), but handler checks `enabled` flag and no-ops.
+When toggled off:
+- `enabled` set to `false` — poll handler no-ops.
+- `adStartTime` reset to `0`.
+- Playback restored (speed back to 1×, unmute if muted).
 
-When toggled back to `true`:
-- Re-connect MutationObserver.
-- Re-start polling interval.
-- Run `findAndClickSkipButton()` immediately.
-
----
-
-## 6. Popup UI Spec (`popup/`)
-
-### 6.1 `popup.html`
-
-A compact popup (300×200px default):
-
-```
-┌─────────────────────────────┐
-│  YT AdSkip                  │
-│                             │
-│  [===========●] Enabled     │  ← Toggle switch (large, touch-friendly)
-│                             │
-│  Status: ● Active           │  ← Green dot = enabled and watching
-│         ○ Paused            │  ← Gray dot = disabled
-│                             │
-│  Skips today: 42            │  ← Stats (from storage)
-│  Total skips: 1,337         │
-│                             │
-│  Last skip: 2 min ago       │
-└─────────────────────────────┘
-```
-
-HTML structure:
-- A `<label>` containing a checkbox input styled as a toggle switch.
-- A status indicator `<div>` with conditional class `.active` / `.paused`.
-- Stats `<div>` with spans for dynamic values.
-
-### 6.2 `popup.js`
-
-On popup open:
-1. Read `chrome.storage.local` for `enabled` and `stats`.
-2. Render toggle state.
-3. Render stats.
-
-On toggle change:
-1. Write new `enabled` state to `chrome.storage.local`.
-2. Update the status indicator.
-
-### 6.3 `popup.css`
-
-- Dark theme (`#1a1a1a` background) matching YouTube's dark UI.
-- Toggle switch: 48px wide, 24px tall, with a circular knob that slides.
-- Green accent color: `#3ea6ff` (YouTube blue) for active state.
-- System font stack: `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif`.
+When toggled back on:
+- `enabled` set to `true` — poll handler resumes.
+- No immediate action taken; next ad trigger will be caught normally.
 
 ---
 
-## 7. Icon Spec (`icons/`)
+## 6. Popup UI
 
-### 7.1 Design
+A compact popup (~300×200) with:
+- Toggle switch (enabled/disabled)
+- Status indicator (green dot = active, gray = paused)
+- Stats: skips today, total skips, last skip time (relative)
+- Debug overlay toggle
 
-A simple, recognizable icon:
-- **Base**: A rounded square with a "skip forward" double-arrowhead symbol (⏭ style).
-- **Color palette**: YouTube-inspired — red (`#FF0000`) arrow on white/dark background, or white arrow on `#3ea6ff` (YouTube blue) background.
-- **Clean at small sizes**: The 16×16 variant must be pixel-perfect and recognizable.
-
-### 7.2 Sizes
-
-| Size | Use |
-|------|-----|
-| 16×16 | Chrome toolbar (default) |
-| 48×48 | Chrome extensions management page (`chrome://extensions`) |
-| 128×128 | Chrome Web Store listing, installation dialog |
-
-### 7.3 Format
-
-PNG with transparency. Alternately, SVG icons can be used if declared in manifest (Chrome 88+ supports SVG icons).
-
-### 7.4 State Variants
-
-- **Default** (enabled, on YouTube): Colored icon.
-- **Disabled** (toggled off): Grayscale/desaturated version. The popup toggles the icon via `chrome.action.setIcon()` (requires adding `"action"` permission if using dynamically; alternatively, stay with a single icon and indicate state only in the popup).
-
-**Recommendation**: Use a single icon. Dynamic icon switching adds complexity and permissions. The popup is where detailed state lives.
+Dark theme with light-theme support via `prefers-color-scheme: light`.
 
 ---
 
-## 8. Edge Cases — Complete Enumeration
+## 7. Icons
 
-### 8.1 Mid-Roll Ads
-- **What**: Ads that appear during video playback, not just at the start (pre-roll).
-- **Handling**: The MutationObserver watches the entire `document.body` with `subtree: true`, so mid-roll ad injection is caught identically to pre-roll ads. No special handling needed.
-
-### 8.2 Bumper Ads (6-Second Unskippable)
-- **What**: Short (6s) ads with no skip button ever.
-- **Handling**: The extension does nothing — there's no skip button to click. The find function returns `null`, no action is taken. This is correct behavior.
-
-### 8.3 Unskippable Ads (15-20s)
-- **What**: Longer ads where the skip button appears after 5 seconds.
-- **Handling**: The MutationObserver detects the button as soon as it's injected. YouTube injects the skip button element into the DOM at the moment it becomes clickable (not before with `disabled=true`). So the button is immediately clickable when detected.
-
-### 8.4 Ad Pods (Multiple Ads in Sequence)
-- **What**: YouTube plays 2+ ads back-to-back (e.g., "Ad 1 of 2").
-- **Handling**: Each ad in the pod will trigger its own skip button injection, caught by the MutationObserver independently. The `WeakSet` click tracking (§4.4) is per-button-instance, so it correctly allows clicking multiple distinct skip buttons across the ad pod.
-
-### 8.5 Skip Button Injected But Hidden
-- **What**: Button exists in DOM but is not yet visible (YouTube's transitional state).
-- **Handling**: The visibility check in §4.2 (`offsetParent !== null`) catches this. The button will be skipped until it becomes visible, at which point the next MutationObserver tick will find and click it.
-
-### 8.6 Rapid Navigation
-- **What**: User rapidly navigates between multiple videos.
-- **Handling**: The 25ms debounce on the MutationObserver callback absorbs rapid DOM changes. The observer itself stays connected — no re-initialization needed.
-
-### 8.7 YouTube Tab in Background
-- **What**: User switches to another tab while an ad is playing.
-- **Handling**: The content script continues running. When the ad becomes skippable, the skip button click will fire. This is acceptable — YouTube continues playing in background tabs, and users expect the ad to be skipped when they return.
-
-### 8.8 Embedded YouTube Players
-- **What**: YouTube videos embedded on third-party sites via `<iframe>`.
-- **Handling**: The `host_permissions` and `content_scripts.matches` are scoped to `*://www.youtube.com/*`. Embedded players on other domains are NOT touched. This is intentional — we only auto-skip on youtube.com itself.
-
-### 8.9 YouTube Shorts
-- **What**: Short-form vertical videos with a different player UI.
-- **Handling**: Shorts use a different ad system. The standard skip button selectors are unlikely to match. The extension gracefully does nothing on Shorts. If Shorts ads become skippable in the future with similar selectors, the observer will pick them up automatically.
-
-### 8.10 YouTube Music (`music.youtube.com`)
-- **What**: YouTube's music streaming subdomain.
-- **Handling**: The `content_scripts.matches` pattern `*://www.youtube.com/*` does NOT match `music.youtube.com`. YouTube Music is out of scope.
-
-### 8.11 YouTube TV / Living Room Apps
-- **What**: YouTube on smart TVs, game consoles.
-- **Handling**: Out of scope — Chrome extensions only run in desktop Chrome.
-
-### 8.12 Antidetection / Rate Limiting
-- **What**: YouTube may have heuristics to detect automated click patterns.
-- **Handling**: The extension clicks only once per skip button and uses native `el.click()`, which is indistinguishable from a user click at the DOM event level. The 2000ms polling interval (not 100ms) is conservative. This approach has been battle-tested by multiple open-source extensions with no widespread detection reports.
+Three PNG sizes: 16×16 (toolbar), 48×48 (extensions page), 128×128 (store).
+Clean, recognizable skip-forward icon. Single color variant — popup handles
+state indication, not the icon.
 
 ---
 
-## 9. Debug Mode
+## 8. Edge Cases
 
-Include a `DEBUG` flag at the top of `content.js`:
-
-```js
-const DEBUG = false; // Set to true during development
-```
-
-When `true`:
-- Log all detected mutations, selector matches, and click attempts to console.
-- Log timing information (time from mutation to click).
-- Log skipped buttons with reason (e.g., "button found but hidden — waiting").
-
-When `false`:
-- Zero console output. Silent operation.
-
----
-
-## 10. Testing Checklist
-
-### Manual Testing (on youtube.com)
-
-- [ ] Pre-roll ad: Skip button appears → clicked within 25ms
-- [ ] Mid-roll ad: Skip button appears during video → clicked within 25ms
-- [ ] Ad pod (2 ads): Both skip buttons clicked independently
-- [ ] Bumper ad (6s unskippable): No error, no action taken
-- [ ] Unskippable ad (15s): Skip button clicked as soon as it appears at 5s
-- [ ] SPA navigation (click related video): Observer stays active, next ad skipped
-- [ ] SPA navigation (type new URL): Observer stays active, next ad skipped
-- [ ] SPA navigation (homepage → watch page): Observer active, ad skipped
-- [ ] Toggle OFF via popup: Ads no longer auto-skipped
-- [ ] Toggle ON via popup: Ads auto-skipped again
-- [ ] Popup shows correct skip count after multiple skips
-- [ ] Extension works after browser restart (no manual re-enable needed)
-- [ ] No console errors in any scenario
-- [ ] No visible UI on the YouTube page
-- [ ] Works with YouTube dark theme
-- [ ] Works with YouTube light theme
-
-### Automated Testing Considerations
-
-- Unit tests for `isValidButton()` validation logic.
-- Unit tests for selector chain fallback.
-- Integration test: inject mock DOM with fake skip button, verify it's clicked.
-- Not feasible to fully automate on live YouTube due to ad availability randomness.
+| Scenario | Handling |
+|---|---|
+| Pre-roll ad | Ad detected via `getAdState()`/CSS classes → sped through at 16× |
+| Mid-roll ad | Same detection, same handling. `onAdStart` fires reliably. |
+| Bumper ads (6s unskippable) | No skip button exists — sped through just like any other ad |
+| Ad pods (multiple ads) | Each ad triggers its own `onAdStart`/`onAdFinish` cycle |
+| SPA navigation during ad | `yt-navigate-finish` resets ad state and restores playback |
+| User disables mid-ad | Playback restored immediately |
+| YouTube in background tab | Content script continues running — ad still skipped |
+| Embedded players | Out of scope — `host_permissions` scoped to `www.youtube.com` |
+| YouTube Shorts | Different player — detection likely won't match, gracefully no-ops |
+| YouTube Music | Out of scope — `music.youtube.com` doesn't match host_permissions |
 
 ---
 
-## 11. Research References
+## 9. Research & Rationale
 
-- **FadBlock** (0x48piraj): Uses recursive polling at 100ms with class-based ad detection on `#movie_player`. Primary reference for ad detection classes.
-- **RemoveAdblockThing**: Multi-selector redundancy approach. Recommends combining `.ytp-ad-skip-button` + `.ytp-ad-skip-button-modern`.
-- **Skip YouTube Ads After Update (GreasyFork)**: Uses `getElementsByClassName` with `.ytp-ad-skip-button.ytp-button`. 500ms polling.
-- **YouTube Ad Ultimate Blocker (2026)**: Dual-insurance approach — `yt-navigate-finish` event + MutationObserver fallback with 200ms throttling.
-- **Open YouTube Optimizer v3.1.1**: Switched from document-wide MutationObserver to event-only SPA detection (`yt-navigate-finish` + `yt-page-data-fetched`) citing performance gains.
-- **Best practice consensus (2025–2026)**: MutationObserver + `yt-navigate-finish` event + conservative polling fallback is the gold standard for YouTube extensions.
+All click-based approaches fail because YouTube's framework (React-based
+player UI) requires `isTrusted: true` click events. Attempted and abandoned:
 
----
+- `el.click()` — no effect
+- `PointerEvent` dispatch — `isTrusted: false`, rejected
+- `MouseEvent` dispatch — same
+- Full `pointerdown` → `mousedown` → `pointerup` → `mouseup` → `click` sequence — rejected
+- `onAdUxClicked` internal API probing — unreliable
 
-## 12. Implementation Order (for Codex)
-
-1. **`manifest.json`** — Create the extension manifest.
-2. **`content.js`** — Implement the core skip logic (sections 4.1–4.9).
-3. **`popup/popup.html`** + **`popup/popup.js`** + **`popup/popup.css`** — Build the popup UI.
-4. **Icons** — Create/generate the three icon sizes.
-5. **`README.md`** — User-facing readme with install instructions.
-6. **Test** — Load unpacked in Chrome, verify against the testing checklist (§10).
+The seeking approach (16× `playbackRate` + `seekTo()`) is battle-tested
+and the only mechanism confirmed to work across YouTube's current player.
 
 ---
 
-*Spec version: 1.0. Last updated: 2026-07-10.*
+*Spec version: 2.0. Last updated: 2026-07-11.*
