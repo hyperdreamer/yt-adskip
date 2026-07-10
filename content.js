@@ -1,58 +1,45 @@
 /**
  * YT AdSkip - Content Script
  *
- * Skips YouTube ads by seeking past them via video.currentTime.
- * YouTube rejects synthetic click events (isTrusted check),
- * but currentTime manipulation bypasses this entirely.
- *
- * Approach based on SponsorBlock/maze-utils pattern.
+ * Skips YouTube ads by speeding through them (playbackRate + seek).
+ * YouTube rejects synthetic click events (isTrusted check), so we
+ * bypass the DOM event system entirely via video manipulation.
  */
 
 (function () {
   'use strict';
 
-  const LOG = console.log.bind(console, '[YT AdSkip]');
+  const DEBUG = false;
+  const LOG = DEBUG ? console.log.bind(console, '[YT AdSkip]') : () => {};
 
   const POLL_INTERVAL_MS = 250;
-  const MIN_AD_DURATION_BEFORE_SKIP_MS = 1000; // Don't seek immediately — let ad start
+  const MIN_AD_BEFORE_SKIP_MS = 1000;
+  const PLAYBACK_SPEED = 16;
+
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
 
   let enabled = true;
   let pollTimer = null;
   let adStartTime = 0;
+  let originalPlaybackRate = 1;
+  let wasMuted = false;
+  let initialized = false;
 
   // ---------------------------------------------------------------------------
-  // Create visible status banner
+  // Ad detection
   // ---------------------------------------------------------------------------
-
-  const banner = document.createElement('div');
-  banner.id = '__yt_adskip_banner';
-  banner.style.cssText = 'position:fixed;top:0;right:0;z-index:999999;background:#000;color:#0f0;padding:4px 12px;font:12px monospace;border-radius:0 0 0 8px;opacity:0.85;pointer-events:none';
-  banner.textContent = 'YT AdSkip: ready';
-  document.addEventListener('DOMContentLoaded', () => {
-    if (document.body) document.body.appendChild(banner);
-  });
-  if (document.body) document.body.appendChild(banner);
-
-  function updateBanner(text) {
-    const b = document.getElementById('__yt_adskip_banner');
-    if (b) b.textContent = 'YT AdSkip: ' + text;
-  }
 
   function getAdState() {
     try {
-      const player = document.getElementById('movie_player');
-      return player && typeof player.getAdState === 'function' ? player.getAdState() : -1;
+      const p = document.getElementById('movie_player');
+      return p && typeof p.getAdState === 'function' ? p.getAdState() : -1;
     } catch (_) { return -1; }
   }
 
-  // ---------------------------------------------------------------------------
-  // YouTube ad state mapping (from reversed YouTube player code)
-  // -1 = no ad, 0 = unknown, 1 = pre-roll, 2 = mid-roll, 3 = post-roll
-  // ---------------------------------------------------------------------------
-
   function isAdPlaying() {
     if (getAdState() !== -1) return true;
-    // Also check CSS classes as fallback (getAdState may lag)
     const player = document.getElementById('movie_player');
     return player && (
       player.classList.contains('ad-showing') ||
@@ -61,76 +48,65 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Skip strategy: speed through + seek past the ad
+  // Skip strategy: speed through ad
   // ---------------------------------------------------------------------------
-
-  let originalPlaybackRate = 1;
-  let wasMuted = false;
 
   function skipAd() {
     const video = document.querySelector('video');
     if (!video || !isFinite(video.duration)) return false;
 
-    // Strategy 1: Speed through the ad at 16x (Claude's approach)
-    // This makes a 30s ad play in ~2s, triggering YouTube's ad-complete.
-    if (video.playbackRate !== 16) {
+    if (video.playbackRate !== PLAYBACK_SPEED) {
       originalPlaybackRate = video.playbackRate || 1;
       wasMuted = video.muted;
       video.muted = true;
-      video.playbackRate = 16;
-      LOG('⏩ Speed 16x | muted');
-      updateBanner('SPEED 16x');
+      video.playbackRate = PLAYBACK_SPEED;
+      LOG('⏩ Speed 16x');
       return true;
     }
 
-    // Strategy 2: Also seek near the end (belt + suspenders)
-    const targetTime = Math.max(0, video.duration - 0.5);
-    if (targetTime > video.currentTime + 0.5) {
-      video.currentTime = targetTime;
-      LOG('⏩ Seek →', targetTime.toFixed(1));
+    // Also seek near end
+    const target = Math.max(0, video.duration - 0.5);
+    if (target > video.currentTime + 0.5) {
+      video.currentTime = target;
       return true;
     }
-
     return false;
   }
 
   function restorePlayback() {
     const video = document.querySelector('video');
     if (!video) return;
-    if (video.playbackRate === 16) {
+    if (video.playbackRate === PLAYBACK_SPEED) {
       video.playbackRate = originalPlaybackRate || 1;
       video.muted = wasMuted;
-      LOG('🔄 Restored playback:', video.playbackRate, 'muted:', video.muted);
+      LOG('🔄 Restored playback');
     }
   }
 
-  function clickSkipButton() {
-    const button = document.querySelector('.ytp-ad-skip-button-modern') ||
-                   document.querySelector('.ytp-ad-skip-button') ||
-                   document.querySelector('.ytp-skip-ad-button');
-    if (!button || button.offsetParent === null || button.disabled) return false;
+  // ---------------------------------------------------------------------------
+  // Best-effort click (doesn't work due to isTrusted, but harmless)
+  // ---------------------------------------------------------------------------
 
+  function tryClickSkipButton() {
+    const btn = document.querySelector('.ytp-ad-skip-button-modern') ||
+                document.querySelector('.ytp-ad-skip-button') ||
+                document.querySelector('.ytp-skip-ad-button');
+    if (!btn || btn.offsetParent === null || btn.disabled) return;
     try {
-      const rect = button.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      const init = {
-        bubbles: true, cancelable: true, composed: true, view: window,
-        clientX: cx, clientY: cy, screenX: cx, screenY: cy,
-        button: 0, buttons: 1
-      };
-      button.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, init, { pointerType: 'mouse', pointerId: 1, isPrimary: true })));
-      button.dispatchEvent(new MouseEvent('mousedown', init));
-      button.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, init, { pointerType: 'mouse', pointerId: 1, isPrimary: true })));
-      button.dispatchEvent(new MouseEvent('mouseup', init));
-      button.dispatchEvent(new MouseEvent('click', init));
-      LOG('🖱️ Clicked skip button');
-      return true;
-    } catch (_) { return false; }
+      const r = btn.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const init = { bubbles: true, cancelable: true, composed: true, view: window,
+        clientX: cx, clientY: cy, screenX: cx, screenY: cy, button: 0, buttons: 1 };
+      btn.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, init, { pointerType: 'mouse', pointerId: 1, isPrimary: true })));
+      btn.dispatchEvent(new MouseEvent('mousedown', init));
+      btn.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, init, { pointerType: 'mouse', pointerId: 1, isPrimary: true })));
+      btn.dispatchEvent(new MouseEvent('mouseup', init));
+      btn.dispatchEvent(new MouseEvent('click', init));
+    } catch (_) {}
   }
 
   // ---------------------------------------------------------------------------
-  // Main ad-skip loop
+  // Main loop
   // ---------------------------------------------------------------------------
 
   function trySkipAd() {
@@ -138,75 +114,111 @@
 
     if (!isAdPlaying()) {
       adStartTime = 0;
-      return; // No ad playing
+      return;
     }
 
-    // Ad is playing — track when it started
     if (!adStartTime) {
       adStartTime = Date.now();
-      LOG('📺 Ad detected! state=' + state);
-      updateBanner('AD state=' + state);
-      return; // Let the ad play for a bit before skipping
+      LOG('📺 Ad detected');
+      bumpStats();
+      return;
     }
 
     const elapsed = Date.now() - adStartTime;
-    const state = getAdState();
-    updateBanner('AD ' + (elapsed / 1000).toFixed(1) + 's | state=' + state);
-
-    // Try clicking the skip button first (for skippable ads)
-    clickSkipButton();
-
-    // If the ad has been playing for a while and we're still in it, seek past it
-    if (elapsed > MIN_AD_DURATION_BEFORE_SKIP_MS) {
-      if (isAdPlaying()) {
-        skipAd();
-      }
+    if (elapsed > MIN_AD_BEFORE_SKIP_MS) {
+      tryClickSkipButton();
+      skipAd();
     }
   }
 
   // ---------------------------------------------------------------------------
-  // YouTube native ad events
+  // YouTube native events
   // ---------------------------------------------------------------------------
 
   function hookYouTubeEvents() {
     const player = document.getElementById('movie_player');
-    if (!player) {
-      // Player not ready — retry
-      setTimeout(hookYouTubeEvents, 500);
-      return;
-    }
+    if (!player) { setTimeout(hookYouTubeEvents, 500); return; }
 
     player.addEventListener('onAdStart', () => {
-      LOG('🔴 onAdStart');
+      if (!enabled) return;
       adStartTime = Date.now();
-      updateBanner('AD STARTED');
     });
 
     player.addEventListener('onAdFinish', () => {
-      LOG('🟢 onAdFinish');
       adStartTime = 0;
       restorePlayback();
-      updateBanner('AD FINISHED');
     });
-
-    LOG('🎣 Hooked onAdStart/onAdFinish');
   }
+
+  // ---------------------------------------------------------------------------
+  // Stats
+  // ---------------------------------------------------------------------------
+
+  let pendingSkips = 0;
+  let flushTimer = null;
+
+  function bumpStats() {
+    pendingSkips++;
+    if (flushTimer) return;
+    flushTimer = setTimeout(() => {
+      const toAdd = pendingSkips;
+      pendingSkips = 0;
+      flushTimer = null;
+      if (toAdd === 0) return;
+      try {
+        chrome.storage.local.get(['stats', 'today'], (data) => {
+          const prevS = (data && data.stats) || { totalSkips: 0, lastSkipTime: null };
+          const stats = {
+            totalSkips: (prevS.totalSkips || 0) + toAdd,
+            lastSkipTime: Date.now()
+          };
+          const todayKey = new Date().toISOString().slice(0, 10);
+          const prevT = (data && data.today) || { date: todayKey, count: 0 };
+          const today = {
+            date: todayKey,
+            count: (prevT.date === todayKey ? prevT.count : 0) + toAdd
+          };
+          chrome.storage.local.set({ stats, today });
+        });
+      } catch (_) {}
+    }, 500);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Enable/disable
+  // ---------------------------------------------------------------------------
+
+  function enable()  { enabled = true; }
+  function disable() { enabled = false; adStartTime = 0; restorePlayback(); }
+
+  try {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes.enabled) return;
+      changes.enabled.newValue ? enable() : disable();
+    });
+  } catch (_) {}
 
   // ---------------------------------------------------------------------------
   // Init
   // ---------------------------------------------------------------------------
 
-  LOG('🚀 YT AdSkip loaded — seeking approach');
-  updateBanner('ready');
-
-  hookYouTubeEvents();
-
-  pollTimer = setInterval(trySkipAd, POLL_INTERVAL_MS);
-
-  // SPA navigation
-  document.addEventListener('yt-navigate-finish', () => {
-    LOG('🧭 navigate');
-    adStartTime = 0;
+  function startAll() {
+    if (initialized) return;
+    initialized = true;
     hookYouTubeEvents();
-  });
+    pollTimer = setInterval(trySkipAd, POLL_INTERVAL_MS);
+
+    document.addEventListener('yt-navigate-finish', () => {
+      adStartTime = 0;
+      hookYouTubeEvents();
+    });
+  }
+
+  // Start immediately, check persisted state async
+  startAll();
+  try {
+    chrome.storage.local.get(['enabled'], (data) => {
+      if (data && data.enabled === false) disable();
+    });
+  } catch (_) {}
 })();
