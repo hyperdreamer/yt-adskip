@@ -8,6 +8,7 @@
 (function () {
   'use strict';
 
+  window.__YT_ADSKIP_LOADED = Date.now();
   const LOG = console.log.bind(console, '[YT AdSkip]');
 
   const POLL_INTERVAL_MS = 500;
@@ -207,6 +208,36 @@
   startObserver();
   startPolling();
   findAndClickSkipButton();
+
+  // Expose for CDP testing
+  window.__YT_ADSKIP_CHECK__ = findAndClickSkipButton;
+
+  // Create a visible debug banner on the page
+  const banner = document.createElement('div');
+  banner.id = '__yt_adskip_banner';
+  banner.style.cssText = 'position:fixed;top:0;right:0;z-index:999999;background:#000;color:#0f0;padding:4px 12px;font:12px monospace;border-radius:0 0 0 8px;opacity:0.85;pointer-events:none';
+  banner.textContent = 'YT AdSkip: waiting';
+  document.body?.appendChild(banner);
+
+  function updateBanner(text) {
+    const b = document.getElementById('__yt_adskip_banner');
+    if (b) b.textContent = 'YT AdSkip: ' + text;
+  }
+
+  // Override click to show on banner
+  const _origClick = clickSkipButton;
+  clickSkipButton = function(btn) {
+    updateBanner('CLICKED ' + (btn.textContent?.trim() || btn.className));
+    return _origClick(btn);
+  };
+
+  // Override find to show on banner
+  const _origFind = findSkipButton;
+  findSkipButton = function() {
+    const btn = _origFind();
+    if (btn) updateBanner('FOUND: ' + (btn.className || 'text-match'));
+    return btn;
+  };
 
   LOG('✅ YT AdSkip ready — watching for skip buttons');
 })();
