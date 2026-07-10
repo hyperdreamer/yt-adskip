@@ -114,17 +114,37 @@
     button.dispatchEvent(new MouseEvent('mouseup', mouseInit));
     button.dispatchEvent(new MouseEvent('click', mouseInit));
 
-    // Internal API fallback
-    try {
-      const player = document.getElementById('movie_player');
-      if (player && typeof player.onAdUxClicked === 'function') {
-        LOG('🔧 Called onAdUxClicked()');
-      }
-    } catch (_) {}
+    // Try every known YouTube ad-skip mechanism
+    const player = document.getElementById('movie_player');
+    if (player) {
+      // Method 1: Direct internal handler
+      try { if (typeof player.onAdUxClicked === 'function') player.onAdUxClicked(); } catch (_) {}
+      // Method 2: Call with button context
+      try { if (typeof player.onAdUxClicked === 'function') player.onAdUxClicked.call(button); } catch (_) {}
+      // Method 3: Try cancelAd
+      try { if (typeof player.cancelAd === 'function') player.cancelAd(); } catch (_) {}
+      // Method 4: Try skipAd
+      try { if (typeof player.skipAd === 'function') player.skipAd(); } catch (_) {}
+      // Method 5: Access ad manager directly
+      try {
+        const adMgr = player.adManager || player.adManager_ || player.getAdManager?.();
+        if (adMgr && typeof adMgr.skip === 'function') { adMgr.skip(); LOG('🔧 adManager.skip() called'); }
+        if (adMgr && typeof adMgr.skipAd === 'function') { adMgr.skipAd(); LOG('🔧 adManager.skipAd() called'); }
+      } catch (_) {}
+      // Method 6: Try to find any skip method on the button itself
+      try {
+        for (const key of Object.keys(button)) {
+          if (key.toLowerCase().includes('skip') && typeof button[key] === 'function') {
+            button[key]();
+            LOG('🔧 button.' + key + '() called');
+          }
+        }
+      } catch (_) {}
+    }
 
     clickedButtons.add(button);
     clickCount++;
-    LOG(`📊 Found: ${foundCount}, Clicked: ${clickCount}, AdState: ${getAdStateStr()}`);
+    updateBanner('CLICKED ' + (button.textContent?.trim() || button.className) + ' | state=' + getAdStateStr());
     return true;
   }
 
