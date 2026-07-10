@@ -48,6 +48,33 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Debug overlay (gated behind storage key "debugOverlay")
+  // ---------------------------------------------------------------------------
+
+  let showOverlay = false;
+  let overlayEl = null;
+
+  function ensureOverlay() {
+    if (overlayEl) return;
+    overlayEl = document.createElement('div');
+    overlayEl.id = '__yt_adskip_overlay';
+    overlayEl.style.cssText = 'position:fixed;top:0;right:0;z-index:999999;background:rgba(0,0,0,0.85);color:#0f0;padding:3px 10px;font:11px monospace;border-radius:0 0 0 6px;pointer-events:none;display:none';
+    if (document.body) document.body.appendChild(overlayEl);
+  }
+
+  function updateOverlay(text) {
+    if (!showOverlay) { if (overlayEl) overlayEl.style.display = 'none'; return; }
+    ensureOverlay();
+    overlayEl.textContent = 'YT AdSkip: ' + text;
+    overlayEl.style.display = '';
+  }
+
+  function setDebugOverlay(enabled) {
+    showOverlay = !!enabled;
+    if (!showOverlay && overlayEl) overlayEl.style.display = 'none';
+  }
+
+  // ---------------------------------------------------------------------------
   // Skip strategy: speed through ad
   // ---------------------------------------------------------------------------
 
@@ -120,14 +147,17 @@
     if (!adStartTime) {
       adStartTime = Date.now();
       LOG('📺 Ad detected');
+      updateOverlay('AD 0.0s');
       bumpStats();
       return;
     }
 
     const elapsed = Date.now() - adStartTime;
+    updateOverlay('AD ' + (elapsed / 1000).toFixed(1) + 's | state=' + getAdState());
     if (elapsed > MIN_AD_BEFORE_SKIP_MS) {
       tryClickSkipButton();
       skipAd();
+      updateOverlay('⏩ skipping');
     }
   }
 
@@ -196,6 +226,11 @@
       if (area !== 'local' || !changes.enabled) return;
       changes.enabled.newValue ? enable() : disable();
     });
+    // Listen for debug overlay toggle
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !changes.debugOverlay) return;
+      setDebugOverlay(changes.debugOverlay.newValue);
+    });
   } catch (_) {}
 
   // ---------------------------------------------------------------------------
@@ -217,8 +252,9 @@
   // Start immediately, check persisted state async
   startAll();
   try {
-    chrome.storage.local.get(['enabled'], (data) => {
+    chrome.storage.local.get(['enabled', 'debugOverlay'], (data) => {
       if (data && data.enabled === false) disable();
+      if (data && data.debugOverlay) setDebugOverlay(true);
     });
   } catch (_) {}
 })();

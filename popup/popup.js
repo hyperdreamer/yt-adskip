@@ -12,6 +12,7 @@
 
   const toggleEl = $('enabled');
   const labelEl  = $('enabled-label');
+  const debugEl  = $('debugOverlay');
   const statusEl = $('status');
   const statusText = $('status-text');
   const todayEl = $('stat-today');
@@ -62,13 +63,14 @@
   }
 
   function readState() {
-    chrome.storage.local.get(['enabled', 'stats', 'today'], (data) => {
+    chrome.storage.local.get(['enabled', 'stats', 'today', 'debugOverlay'], (data) => {
       const lastError = chrome.runtime.lastError;
       if (lastError) {
         console.error('YT AdSkip: storage read failed', lastError);
         return;
       }
       applyEnabledState(data && data.enabled !== false);
+      debugEl.checked = !!(data && data.debugOverlay);
       renderStats(data && data.stats, data && data.today);
     });
   }
@@ -86,6 +88,10 @@
   }
 
   toggleEl.addEventListener('change', onToggle);
+
+  debugEl.addEventListener('change', () => {
+    chrome.storage.local.set({ debugOverlay: !!debugEl.checked });
+  });
 
   // Listen for storage changes from content script (instant updates).
   chrome.storage.onChanged.addListener((changes, area) => {

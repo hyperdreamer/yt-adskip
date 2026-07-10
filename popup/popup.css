@@ -130,6 +130,20 @@ html, body {
   font-weight: 500;
 }
 
+.toggle-sm .slider {
+  width: 36px;
+  height: 18px;
+}
+.toggle-sm .slider::after {
+  width: 14px;
+  height: 14px;
+  top: 2px;
+  left: 2px;
+}
+.toggle-sm input:checked + .slider::after {
+  transform: translateX(18px);
+}
+
 .status {
   display: flex;
   align-items: center;
