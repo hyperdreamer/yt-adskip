@@ -125,9 +125,13 @@
     if (el.getAttribute('aria-disabled') === 'true') return false;
     if (el.getAttribute('aria-hidden') === 'true') return false;
     if (!(el.offsetWidth > 0 && el.offsetHeight > 0)) return false;
+    // Check computed style for non-layout hiding techniques.
+    const cs = getComputedStyle(el);
+    if (cs.visibility === 'hidden') return false;
+    if (cs.opacity === '0') return false;
+    if (cs.pointerEvents === 'none') return false;
     // Must be inside the player, not a random "Skip" elsewhere.
-    const inPlayer = el.closest('#movie_player');
-    if (!inPlayer) return false;
+    if (!el.closest('#movie_player')) return false;
     return true;
   }
 
@@ -162,18 +166,22 @@
       const rect = button.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
       const cy = rect.top + rect.height / 2;
-      const init = {
-        bubbles: true, cancelable: true, view: window,
+      const mouseInit = {
+        bubbles: true, cancelable: true, composed: true, view: window,
         clientX: cx, clientY: cy, screenX: cx, screenY: cy,
         button: 0, buttons: 1
       };
+      const pointerInit = Object.assign({}, mouseInit, {
+        pointerType: 'mouse', pointerId: 1, isPrimary: true,
+        width: 1, height: 1, pressure: 0.5
+      });
 
       button.focus();
-      button.dispatchEvent(new PointerEvent('pointerdown', init));
-      button.dispatchEvent(new MouseEvent('mousedown', init));
-      button.dispatchEvent(new PointerEvent('pointerup', init));
-      button.dispatchEvent(new MouseEvent('mouseup', init));
-      button.dispatchEvent(new MouseEvent('click', init));
+      button.dispatchEvent(new PointerEvent('pointerdown', pointerInit));
+      button.dispatchEvent(new MouseEvent('mousedown', mouseInit));
+      button.dispatchEvent(new PointerEvent('pointerup', pointerInit));
+      button.dispatchEvent(new MouseEvent('mouseup', mouseInit));
+      button.dispatchEvent(new MouseEvent('click', mouseInit));
 
       // Also try YouTube's internal ad click handler as fallback.
       try {
@@ -390,8 +398,15 @@
   // ---------------------------------------------------------------------------
 
   function bumpStats() {
+    // Only count when an ad is actually playing (getAdState() !== -1).
+    const player = document.getElementById('movie_player');
+    try {
+      if (player && typeof player.getAdState === 'function' && player.getAdState() === -1) {
+        return; // No ad playing — don't count false positives.
+      }
+    } catch (_) { /* proceed anyway */ }
     pendingSkipIncrement++;
-    if (flushStatsTimer) return; // already scheduled
+    if (flushStatsTimer) return;
     flushStatsTimer = setTimeout(flushStats, STATS_FLUSH_MS);
   }
 
