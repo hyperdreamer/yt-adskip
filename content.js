@@ -269,13 +269,22 @@
 
   function bumpStats() {
     try {
-      chrome.storage.local.get(['stats'], (data) => {
-        const prev = (data && data.stats) || { totalSkips: 0, lastSkipTime: null };
+      chrome.storage.local.get(['stats', 'today'], (data) => {
+        const prevStats = (data && data.stats) || { totalSkips: 0, lastSkipTime: null };
         const stats = {
-          totalSkips: (prev.totalSkips || 0) + 1,
+          totalSkips: (prevStats.totalSkips || 0) + 1,
           lastSkipTime: Date.now()
         };
-        chrome.storage.local.set({ stats });
+
+        // Also increment today's count, handling date rollover.
+        const todayKey = new Date().toISOString().slice(0, 10);
+        const prevToday = (data && data.today) || { date: todayKey, count: 0 };
+        const today = {
+          date: todayKey,
+          count: (prevToday.date === todayKey ? prevToday.count : 0) + 1
+        };
+
+        chrome.storage.local.set({ stats, today });
       });
     } catch (err) {
       // storage may be unavailable in some contexts; ignore silently.
