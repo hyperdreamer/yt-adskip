@@ -55,28 +55,48 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Skip strategy: seek video past the ad
+  // Skip strategy: speed through + seek past the ad
   // ---------------------------------------------------------------------------
+
+  let originalPlaybackRate = 1;
+  let wasMuted = false;
 
   function skipAd() {
     const video = document.querySelector('video');
     if (!video || !isFinite(video.duration)) return false;
 
-    // Seek to near the end to trigger YouTube's ad-skip logic
-    const targetTime = Math.min(video.duration - 0.5, video.currentTime + 30);
-    if (targetTime > video.currentTime) {
-      const oldTime = video.currentTime;
-      video.currentTime = targetTime;
-      LOG('⏩ Seeked:', oldTime.toFixed(1), '→', targetTime.toFixed(1), 'duration:', video.duration.toFixed(1));
-      updateBanner('SEEKED ' + oldTime.toFixed(0) + '→' + targetTime.toFixed(0) + 's');
+    // Strategy 1: Speed through the ad at 16x (Claude's approach)
+    // This makes a 30s ad play in ~2s, triggering YouTube's ad-complete.
+    if (video.playbackRate !== 16) {
+      originalPlaybackRate = video.playbackRate || 1;
+      wasMuted = video.muted;
+      video.muted = true;
+      video.playbackRate = 16;
+      LOG('⏩ Speed 16x | muted');
+      updateBanner('SPEED 16x');
       return true;
     }
+
+    // Strategy 2: Also seek near the end (belt + suspenders)
+    const targetTime = Math.max(0, video.duration - 0.5);
+    if (targetTime > video.currentTime + 0.5) {
+      video.currentTime = targetTime;
+      LOG('⏩ Seek →', targetTime.toFixed(1));
+      return true;
+    }
+
     return false;
   }
 
-  // ---------------------------------------------------------------------------
-  // Also try clicking the skip button as a complement to seeking
-  // ---------------------------------------------------------------------------
+  function restorePlayback() {
+    const video = document.querySelector('video');
+    if (!video) return;
+    if (video.playbackRate === 16) {
+      video.playbackRate = originalPlaybackRate || 1;
+      video.muted = wasMuted;
+      LOG('🔄 Restored playback:', video.playbackRate, 'muted:', video.muted);
+    }
+  }
 
   function clickSkipButton() {
     const button = document.querySelector('.ytp-ad-skip-button-modern') ||
@@ -159,6 +179,7 @@
     player.addEventListener('onAdFinish', () => {
       LOG('🟢 onAdFinish');
       adStartTime = 0;
+      restorePlayback();
       updateBanner('AD FINISHED');
     });
 
