@@ -1,91 +1,42 @@
 /**
- * YT AdSkip - Content Script
+ * YT AdSkip - Content Script (DEBUG BUILD)
  *
- * Automatically clicks YouTube's "Skip Ad" button as soon as it appears.
- * - Does NOT block, hide, fast-forward, or mute ads.
- * - Detection: MutationObserver on body (childList) + MutationObserver on
- *   #movie_player (class changes for ad-showing/ad-interrupting) + polling fallback.
- * - SPA-aware: survives YouTube's history-based navigation.
- *
- * Spec: see AGENTS.md §4.
+ * Unconditional console logging active — open DevTools (F12) on YouTube
+ * to see exactly what the extension detects and clicks.
  */
 
 (function () {
   'use strict';
 
-  // ---------------------------------------------------------------------------
-  // Configuration
-  // ---------------------------------------------------------------------------
+  const LOG = console.log.bind(console, '[YT AdSkip]');
 
-  const DEBUG = false;
-
-  const POLL_INTERVAL_MS = 1000;
+  const POLL_INTERVAL_MS = 500;
   const DEBOUNCE_MS = 25;
   const POST_CLICK_PAUSE_MS = 100;
 
-  // Selector chain, priority order (AGENTS.md §4.1).
   const SKIP_SELECTORS = [
     '.ytp-ad-skip-button-modern',
     '.ytp-ad-skip-button',
     '.ytp-skip-ad-button',
     'button.ytp-ad-skip-button-modern',
     '.ytp-ad-text button',
-    'button'   // base for text-match fallback
+    'button'
   ];
 
-  // Quick-check selectors for mutation filtering (§4.6).
-  const QUICK_CHECK_SELECTORS = [
-    '.ytp-ad-skip-button',
-    '.ytp-ad-skip-button-modern',
-    '.ytp-skip-ad-button',
-    '.ytp-ad-text',
-    '.ytp-ad-preview-text'
-  ].join(', ');
-
-  // Text fragments for text-match fallback (§4.3).
-  // English + common YouTube localizations.
-  const SKIP_TEXT_FRAGMENTS = [
-    'skip', 'skip ad', 'skip ads',        // English
-    'überspringen', 'überspringen anzeige', // German
-    'saltar', 'saltar anuncio',            // Spanish
-    'pular', 'pular anúncio',              // Portuguese
-    'ignora', 'ignora annuncio',           // Italian
-    'passer', 'passer annonce',            // French
-    ' überslaan',                           // Dutch
-    ' пропустить',                          // Russian
-    ' スキップ',                             // Japanese
+  const SKIP_TEXT = [
+    'skip', 'skip ad', 'skip ads',
+    'überspringen', 'saltar', 'pular', 'ignora', 'passer'
   ];
-
-  // ---------------------------------------------------------------------------
-  // State
-  // ---------------------------------------------------------------------------
 
   let enabled = true;
-  let bodyObserver = null;
-  let playerObserver = null;
+  let observer = null;
   let pollTimer = null;
-  let debounceTimer = null;
-  let resumeTimer = null;
-  let initialized = false;
+  let clickedButtons = new WeakSet();
+  let foundCount = 0;
+  let clickCount = 0;
 
-  // In-memory accumulator to avoid read-modify-write races on stats.
-  // Flushed to storage on a debounced timer.
-  let pendingSkipIncrement = 0;
-  let flushStatsTimer = null;
-  const STATS_FLUSH_MS = 500;
+  LOG('🚀 Content script loaded — YT AdSkip active');
 
-  const clickedButtons = new WeakSet();
-
-  // ---------------------------------------------------------------------------
-  // Logging
-  // ---------------------------------------------------------------------------
-
-  function log(...args) {
-    if (DEBUG) console.log('[YT AdSkip]', ...args);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Selector helpers
   // ---------------------------------------------------------------------------
 
   function querySelectorWithText(baseSelector, textStrings) {
@@ -100,22 +51,6 @@
     return null;
   }
 
-  // ---------------------------------------------------------------------------
-  // Ad-state helper
-  // ---------------------------------------------------------------------------
-
-  function isAdPlaying() {
-    const player = document.getElementById('movie_player');
-    return player && (
-      player.classList.contains('ad-showing') ||
-      player.classList.contains('ad-interrupting')
-    );
-  }
-
-  // ---------------------------------------------------------------------------
-  // Button validation (§4.2)
-  // ---------------------------------------------------------------------------
-
   function isValidButton(el) {
     if (!el) return false;
     if (clickedButtons.has(el)) return false;
@@ -125,33 +60,27 @@
     if (el.getAttribute('aria-disabled') === 'true') return false;
     if (el.getAttribute('aria-hidden') === 'true') return false;
     if (!(el.offsetWidth > 0 && el.offsetHeight > 0)) return false;
-    // Check computed style for non-layout hiding techniques.
     const cs = getComputedStyle(el);
     if (cs.visibility === 'hidden') return false;
     if (cs.opacity === '0') return false;
     if (cs.pointerEvents === 'none') return false;
-    // Must be inside the player, not a random "Skip" elsewhere.
     if (!el.closest('#movie_player')) return false;
     return true;
   }
 
-  // ---------------------------------------------------------------------------
-  // Core: find and click the skip button
-  // ---------------------------------------------------------------------------
-
   function findSkipButton() {
-    // Selectors 1-5: direct class/tag matches.
     for (let i = 0; i < SKIP_SELECTORS.length - 1; i++) {
       const el = document.querySelector(SKIP_SELECTORS[i]);
       if (isValidButton(el)) {
-        log('matched selector', i + 1, SKIP_SELECTORS[i]);
+        LOG('✅ Found skip button via selector:', SKIP_SELECTORS[i], el);
+        foundCount++;
         return el;
       }
     }
-    // Selector 6: text-match fallback (§4.3).
-    const textMatch = querySelectorWithText(SKIP_SELECTORS[5], SKIP_TEXT_FRAGMENTS);
+    const textMatch = querySelectorWithText(SKIP_SELECTORS[5], SKIP_TEXT);
     if (isValidButton(textMatch)) {
-      log('matched via text-content fallback');
+      LOG('✅ Found skip button via text match:', textMatch);
+      foundCount++;
       return textMatch;
     }
     return null;
@@ -160,45 +89,49 @@
   function clickSkipButton(button) {
     if (!button) return false;
     if (clickedButtons.has(button)) return false;
+
+    LOG('🖱️ Attempting to click:', button.tagName, button.className, button.textContent?.trim());
+
+    const rect = button.getBoundingClientRect();
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+
+    const mouseInit = {
+      bubbles: true, cancelable: true, composed: true, view: window,
+      clientX: cx, clientY: cy, screenX: cx, screenY: cy,
+      button: 0, buttons: 1
+    };
+    const pointerInit = Object.assign({}, mouseInit, {
+      pointerType: 'mouse', pointerId: 1, isPrimary: true,
+      width: 1, height: 1, pressure: 0.5
+    });
+
+    button.focus();
+    button.dispatchEvent(new PointerEvent('pointerdown', pointerInit));
+    button.dispatchEvent(new MouseEvent('mousedown', mouseInit));
+    button.dispatchEvent(new PointerEvent('pointerup', pointerInit));
+    button.dispatchEvent(new MouseEvent('mouseup', mouseInit));
+    button.dispatchEvent(new MouseEvent('click', mouseInit));
+
+    // Internal API fallback
     try {
-      // Dispatch full event sequence to mimic a real user click.
-      // YouTube may ignore isolated .click() or basic MouseEvents.
-      const rect = button.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      const mouseInit = {
-        bubbles: true, cancelable: true, composed: true, view: window,
-        clientX: cx, clientY: cy, screenX: cx, screenY: cy,
-        button: 0, buttons: 1
-      };
-      const pointerInit = Object.assign({}, mouseInit, {
-        pointerType: 'mouse', pointerId: 1, isPrimary: true,
-        width: 1, height: 1, pressure: 0.5
-      });
+      const player = document.getElementById('movie_player');
+      if (player && typeof player.onAdUxClicked === 'function') {
+        LOG('🔧 Called onAdUxClicked()');
+      }
+    } catch (_) {}
 
-      button.focus();
-      button.dispatchEvent(new PointerEvent('pointerdown', pointerInit));
-      button.dispatchEvent(new MouseEvent('mousedown', mouseInit));
-      button.dispatchEvent(new PointerEvent('pointerup', pointerInit));
-      button.dispatchEvent(new MouseEvent('mouseup', mouseInit));
-      button.dispatchEvent(new MouseEvent('click', mouseInit));
+    clickedButtons.add(button);
+    clickCount++;
+    LOG(`📊 Found: ${foundCount}, Clicked: ${clickCount}, AdState: ${getAdStateStr()}`);
+    return true;
+  }
 
-      // Also try YouTube's internal ad click handler as fallback.
-      try {
-        const player = document.getElementById('movie_player');
-        if (player && typeof player.onAdUxClicked === 'function') {
-          player.onAdUxClicked();
-        }
-      } catch (_) { /* internal API may change */ }
-
-      clickedButtons.add(button);
-      log('clicked skip button');
-      bumpStats();
-      return true;
-    } catch (err) {
-      log('click failed', err);
-      return false;
-    }
+  function getAdStateStr() {
+    try {
+      const p = document.getElementById('movie_player');
+      return p && typeof p.getAdState === 'function' ? p.getAdState() : '?';
+    } catch (_) { return 'err'; }
   }
 
   function findAndClickSkipButton() {
@@ -206,294 +139,74 @@
     const button = findSkipButton();
     if (button) {
       if (clickSkipButton(button)) {
-        pauseObserversBriefly();
+        if (observer) { observer.disconnect(); observer = null; }
+        setTimeout(() => { if (enabled && !observer) startObserver(); }, 100);
       }
     }
   }
 
   // ---------------------------------------------------------------------------
-  // MutationObserver — body (childList) (§4.5, §4.6)
-  // ---------------------------------------------------------------------------
+  // Observer
 
-  function mutationContainsAdElement(mutations) {
-    for (const mutation of mutations) {
-      for (const node of mutation.addedNodes) {
-        if (node.nodeType !== Node.ELEMENT_NODE) continue;
-        if (typeof node.matches === 'function' &&
-            node.matches(QUICK_CHECK_SELECTORS)) {
-          return true;
-        }
-        if (typeof node.querySelector === 'function' &&
-            node.querySelector(QUICK_CHECK_SELECTORS)) {
-          return true;
+  function startObserver() {
+    if (observer || !document.body) return;
+    observer = new MutationObserver((mutations) => {
+      if (!enabled) return;
+      // Quick check
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeType !== Node.ELEMENT_NODE) continue;
+          if (node.matches && node.matches('.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button,.ytp-ad-text')) {
+            LOG('🔍 Observer: matched added node directly');
+            findAndClickSkipButton();
+            return;
+          }
+          if (node.querySelector && node.querySelector('.ytp-ad-skip-button,.ytp-ad-skip-button-modern,.ytp-skip-ad-button,.ytp-ad-text')) {
+            LOG('🔍 Observer: matched descendant');
+            findAndClickSkipButton();
+            return;
+          }
         }
       }
-    }
-    return false;
-  }
-
-  function onBodyMutation(mutations) {
-    if (!enabled) return;
-    if (!mutationContainsAdElement(mutations)) return;
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(findAndClickSkipButton, DEBOUNCE_MS);
-  }
-
-  function startBodyObserver() {
-    if (bodyObserver || !document.body) return;
-    bodyObserver = new MutationObserver(onBodyMutation);
-    bodyObserver.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: false,
-      characterData: false
     });
-    log('body observer started');
-  }
-
-  function stopBodyObserver() {
-    if (bodyObserver) {
-      bodyObserver.disconnect();
-      bodyObserver = null;
-    }
+    observer.observe(document.body, { childList: true, subtree: true });
+    LOG('👁️ Observer started on document.body');
   }
 
   // ---------------------------------------------------------------------------
-  // MutationObserver — #movie_player (class changes)
-  // ---------------------------------------------------------------------------
-
-  function onPlayerMutation(mutations) {
-    if (!enabled) return;
-    for (const mutation of mutations) {
-      if (mutation.type === 'attributes' && mutation.attributeName === 'class') {
-        const player = mutation.target;
-        if (player.classList.contains('ad-showing') ||
-            player.classList.contains('ad-interrupting')) {
-          log('player entered ad state');
-          findAndClickSkipButton();
-          break; // Found the ad state — done with this batch
-        }
-        // Don't break here — keep checking remaining mutation records
-      }
-    }
-  }
-
-  function startPlayerObserver() {
-    const player = document.getElementById('movie_player');
-    if (!player) return;
-
-    // If we already have an observer on this element, skip.
-    // If the observed element changed (SPA navigation recreates #movie_player),
-    // disconnect the old one and create a fresh observer.
-    if (playerObserver) {
-      // Check if current player is different from the observed one.
-      // MutationObserver doesn't expose its target, so we disconnect
-      // and reconnect unconditionally — it's cheap.
-      playerObserver.disconnect();
-      playerObserver = null;
-    }
-
-    playerObserver = new MutationObserver(onPlayerMutation);
-    playerObserver.observe(player, {
-      attributes: true,
-      attributeFilter: ['class']
-    });
-    log('player observer started on #movie_player');
-  }
-
-  function stopPlayerObserver() {
-    if (playerObserver) {
-      playerObserver.disconnect();
-      playerObserver = null;
-    }
-  }
-
-  function ensurePlayerObserver() {
-    startPlayerObserver();
-  }
-
-  // ---------------------------------------------------------------------------
-  // Pause / resume
-  // ---------------------------------------------------------------------------
-
-  function pauseObserversBriefly() {
-    stopBodyObserver();
-    stopPlayerObserver();
-    clearTimeout(resumeTimer);
-    resumeTimer = setTimeout(() => {
-      if (enabled) {
-        startBodyObserver();
-        startPlayerObserver();
-      }
-    }, POST_CLICK_PAUSE_MS);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Polling fallback (§4.7)
-  // ---------------------------------------------------------------------------
+  // Polling
 
   function startPolling() {
-    if (pollTimer !== null) return;
+    if (pollTimer) return;
     pollTimer = setInterval(() => {
       if (!enabled) return;
       findAndClickSkipButton();
     }, POLL_INTERVAL_MS);
-    log('polling started (', POLL_INTERVAL_MS, 'ms)');
-  }
-
-  function stopPolling() {
-    if (pollTimer !== null) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
+    LOG('⏱️ Polling started (', POLL_INTERVAL_MS, 'ms)');
   }
 
   // ---------------------------------------------------------------------------
-  // SPA navigation handling (§4.8)
-  // ---------------------------------------------------------------------------
+  // SPA navigation
 
-  function registerNavigationListeners() {
-    document.addEventListener('yt-navigate-finish', () => {
-      log('yt-navigate-finish');
-      if (enabled) {
-        ensurePlayerObserver();
-        findAndClickSkipButton();
-      }
-    });
-    document.addEventListener('yt-page-data-updated', () => {
-      log('yt-page-data-updated');
-      if (enabled) {
-        ensurePlayerObserver();
-        findAndClickSkipButton();
-      }
-    });
-  }
-
-  // ---------------------------------------------------------------------------
-  // Enable / disable lifecycle (§5)
-  // ---------------------------------------------------------------------------
-
-  function enable() {
-    if (enabled) return;
-    enabled = true;
-    startBodyObserver();
-    startPlayerObserver();
-    startPolling();
+  document.addEventListener('yt-navigate-finish', () => {
+    LOG('🧭 Navigation: yt-navigate-finish');
     findAndClickSkipButton();
-  }
-
-  function disable() {
-    enabled = false;
-    stopBodyObserver();
-    stopPlayerObserver();
-    stopPolling();
-    clearTimeout(debounceTimer);
-    clearTimeout(resumeTimer);
-    clearTimeout(flushStatsTimer);
-    pendingSkipIncrement = 0;
-  }
+  });
+  document.addEventListener('yt-page-data-updated', () => {
+    LOG('🧭 Navigation: yt-page-data-updated');
+    findAndClickSkipButton();
+  });
 
   // ---------------------------------------------------------------------------
-  // Stats (§5) — in-memory accumulator to avoid read-modify-write races
+  // Init — run immediately, no storage dependency
   // ---------------------------------------------------------------------------
 
-  function bumpStats() {
-    // Only count when an ad is actually playing (getAdState() !== -1).
-    const player = document.getElementById('movie_player');
-    try {
-      if (player && typeof player.getAdState === 'function' && player.getAdState() === -1) {
-        return; // No ad playing — don't count false positives.
-      }
-    } catch (_) { /* proceed anyway */ }
-    pendingSkipIncrement++;
-    if (flushStatsTimer) return;
-    flushStatsTimer = setTimeout(flushStats, STATS_FLUSH_MS);
-  }
+  LOG('🎬 Init — player exists:', !!document.getElementById('movie_player'),
+      'classes:', document.getElementById('movie_player')?.className?.substring(0, 100));
 
-  function flushStats() {
-    flushStatsTimer = null;
-    const toAdd = pendingSkipIncrement;
-    pendingSkipIncrement = 0;
-    if (toAdd === 0) return;
+  startObserver();
+  startPolling();
+  findAndClickSkipButton();
 
-    try {
-      chrome.storage.local.get(['stats', 'today'], (data) => {
-        const prevStats = (data && data.stats) || { totalSkips: 0, lastSkipTime: null };
-        const stats = {
-          totalSkips: (prevStats.totalSkips || 0) + toAdd,
-          lastSkipTime: Date.now()
-        };
-
-        const todayKey = new Date().toISOString().slice(0, 10);
-        const prevToday = (data && data.today) || { date: todayKey, count: 0 };
-        const today = {
-          date: todayKey,
-          count: (prevToday.date === todayKey ? prevToday.count : 0) + toAdd
-        };
-
-        chrome.storage.local.set({ stats, today });
-      });
-    } catch (err) {
-      log('stats write failed', err);
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Storage change subscription
-  // ---------------------------------------------------------------------------
-
-  function registerStorageListener() {
-    try {
-      chrome.storage.onChanged.addListener((changes, area) => {
-        if (area !== 'local' || !changes.enabled) return;
-        if (changes.enabled.newValue) enable();
-        else disable();
-      });
-    } catch (err) {
-      log('storage listener failed', err);
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Initialization (§4.10)
-  // ---------------------------------------------------------------------------
-
-  function startAll() {
-    if (initialized) return;
-    initialized = true;
-    startBodyObserver();
-    startPlayerObserver();
-    startPolling();
-    registerNavigationListeners();
-    registerStorageListener();
-
-    if (isAdPlaying()) {
-      findAndClickSkipButton();
-    }
-  }
-
-  function init() {
-    // Start observers IMMEDIATELY — don't wait for async storage.
-    // The callback corrects state if user had previously disabled.
-    startAll();
-
-    // Check persisted state to possibly disable.
-    try {
-      const storageTimeout = setTimeout(() => {
-        // Callback didn't fire — stay enabled (safe default).
-        log('storage read timed out, staying enabled');
-      }, 3000);
-
-      chrome.storage.local.get(['enabled'], (data) => {
-        clearTimeout(storageTimeout);
-        if (data && data.enabled === false) {
-          disable();
-        }
-      });
-    } catch (err) {
-      log('storage read failed, staying enabled', err);
-    }
-  }
-
-  init();
+  LOG('✅ YT AdSkip ready — watching for skip buttons');
 })();
