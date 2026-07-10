@@ -51,7 +51,13 @@
   // ---------------------------------------------------------------------------
 
   function isAdPlaying() {
-    return getAdState() !== -1;
+    if (getAdState() !== -1) return true;
+    // Also check CSS classes as fallback (getAdState may lag)
+    const player = document.getElementById('movie_player');
+    return player && (
+      player.classList.contains('ad-showing') ||
+      player.classList.contains('ad-interrupting')
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -130,8 +136,7 @@
   function trySkipAd() {
     if (!enabled) return;
 
-    const state = getAdState();
-    if (state === -1) {
+    if (!isAdPlaying()) {
       adStartTime = 0;
       return; // No ad playing
     }
@@ -145,6 +150,7 @@
     }
 
     const elapsed = Date.now() - adStartTime;
+    const state = getAdState();
     updateBanner('AD ' + (elapsed / 1000).toFixed(1) + 's | state=' + state);
 
     // Try clicking the skip button first (for skippable ads)
