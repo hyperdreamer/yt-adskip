@@ -157,7 +157,12 @@
     if (!button) return false;
     if (clickedButtons.has(button)) return false;
     try {
-      button.click();
+      // Dispatch realistic mouse events — YouTube may ignore bare .click().
+      const opts = { bubbles: true, cancelable: true, view: window };
+      button.dispatchEvent(new MouseEvent('mousedown', opts));
+      button.dispatchEvent(new MouseEvent('mouseup', opts));
+      button.dispatchEvent(new MouseEvent('click', opts));
+      button.focus();
       clickedButtons.add(button);
       log('clicked skip button');
       bumpStats();
