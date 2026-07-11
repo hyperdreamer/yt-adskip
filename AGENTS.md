@@ -106,11 +106,31 @@ YouTube applies to `#movie_player` during ad playback.
 
 #### Layer 3: YouTube Player Events
 ```js
-player.addEventListener('onAdStart', () => { adStartTime = Date.now(); });
-player.addEventListener('onAdFinish', () => { adStartTime = 0; restorePlayback(); });
+// Handler references stored for idempotent cleanup on SPA navigation
+let adStartHandler = null;
+let adFinishHandler = null;
+
+function hookYouTubeEvents() {
+  const player = document.getElementById('movie_player');
+  if (!player) {
+    if (hookRetries++ < MAX_HOOK_RETRIES) setTimeout(hookYouTubeEvents, 500);
+    return;
+  }
+  hookRetries = 0;
+  // Clean up old listeners before re-attaching (SPA-safe)
+  if (adStartHandler) player.removeEventListener('onAdStart', adStartHandler);
+  if (adFinishHandler) player.removeEventListener('onAdFinish', adFinishHandler);
+
+  adStartHandler = function () { adStartTime = Date.now(); };
+  adFinishHandler = function () { adStartTime = 0; restorePlayback(); };
+  player.addEventListener('onAdStart', adStartHandler);
+  player.addEventListener('onAdFinish', adFinishHandler);
+}
 ```
 YouTube's native `onAdStart` and `onAdFinish` events provide reliable
-ad-lifecycle boundaries. Used to set/clear ad state and trigger playback restore.
+ad-lifecycle boundaries. Handlers are tracked in variables so old listeners
+can be removed before re-attaching on SPA navigation — prevents memory leaks.
+Retries are capped at 40 attempts (~20 s) in case `#movie_player` never loads.
 
 ### 4.2 Main Loop — Polling at 250 ms
 
@@ -210,24 +230,26 @@ it costs nothing and might work if YouTube ever relaxes the check.
 ### 4.6 SPA Navigation Handling
 
 ```js
-document.addEventListener('yt-navigate-finish', () => {
+document.addEventListener('yt-navigate-finish', function () {
   adStartTime = 0;
-  hookYouTubeEvents(); // re-attach player event listeners
+  hookYouTubeEvents(); // idempotent — cleans up old handlers before re-attaching
 });
 ```
 
 YouTube never does full page reloads. `yt-navigate-finish` fires after
-every SPA transition. Reset ad state and re-hook the player events (the
-old `#movie_player` element may have been replaced).
+every SPA transition. Reset ad state and re-hook the player events.
+`hookYouTubeEvents()` is idempotent — it removes old `onAdStart`/`onAdFinish`
+listeners before attaching new ones, so repeated navigations don't leak.
 
 ### 4.7 Initialization Sequence
 
 On content script load (`document_idle`):
 
 1. Call `startAll()` immediately — start polling and hook player events.
-2. Asynchronously read `chrome.storage.local` for enabled/disabled state.
+2. Asynchronously read `chrome.storage.local` for enabled/disabled state and debug overlay toggle.
 3. If disabled, call `disable()` (clears ad state, restores playback).
-4. Register `chrome.storage.onChanged` listener for enable/disable toggle.
+4. Register a single `chrome.storage.onChanged` listener that handles both `enabled` and `debugOverlay` keys.
+5. Register a `beforeunload` listener that flushes any pending stats immediately (prevents losing skip counts on SPA navigations).
 
 The script starts enabled by default and corrects itself if the persisted
 state says otherwise. This avoids a flash where ads play for one poll cycle
@@ -256,10 +278,10 @@ before the stored state is read.
 
 ### Cross-context Communication
 
-- **Popup → Content Script**: Popup writes `{ enabled: true/false }` to storage.
-  Content script listens via `chrome.storage.onChanged`.
+- **Popup → Content Script**: Popup writes `{ enabled: true/false }` or `{ debugOverlay: true/false }` to storage.
+  Content script listens via a single `chrome.storage.onChanged` handler that dispatches to `enable()`/`disable()` or `setDebugOverlay()`.
 - **Content Script → Popup**: Content script writes updated `stats` after each ad
-  detection. Popup reads on open and listens via `onChanged`.
+  detection. Popup reads on open and listens via `onChanged`. Stats are debounced at 500 ms and flushed immediately on `beforeunload` to avoid data loss.
 
 ### Disable Behavior
 
@@ -327,4 +349,4 @@ and the only mechanism confirmed to work across YouTube's current player.
 
 ---
 
-*Spec version: 2.0. Last updated: 2026-07-11.*
+*Spec version: 2.1. Last updated: 2026-07-11.*

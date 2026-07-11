@@ -90,7 +90,7 @@ YT AdSkip runs entirely on your machine. It:
 - Does not make any network requests.
 - Does not collect, store, or transmit any data off your device.
 - Only reads from `chrome.storage.local` and writes to the keys `enabled`,
-  `stats`, and `today`.
+  `stats`, `today`, and `debugOverlay`.
 - Only runs on `https://www.youtube.com/*`.
 
 ## Limitations
