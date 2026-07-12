@@ -163,7 +163,21 @@ function trySkipAd() {
 The poll runs every 250 ms — fast enough to catch ad transitions quickly,
 slow enough to avoid triggering YouTube's anti-automation heuristics.
 
-### 4.3 Skip Strategy — CDP Click + Video Fallback
+### 4.3 Skip Strategy — CDP Click First, Video-Speed Only as Fallback
+
+**Critical design choice**: video-speed (16× playbackRate + seek) is detectable
+by YouTube as abnormal playback behavior. It must ONLY run when there's
+genuinely no skip button (bumper ads) or CDP has been attempted and failed.
+It must NEVER run alongside a CDP click on a skippable ad.
+
+The `cdpResult` state machine enforces this:
+
+| State | Meaning | Action |
+|---|---|---|
+| `null` | No action taken yet for this ad | Find skip button, try CDP |
+| `'pending'` | CDP click dispatched, awaiting result | Do nothing, wait |
+| `'ok'` | CDP click succeeded | Do nothing, ad ends naturally |
+| `'fail'` | CDP click failed | Fall back to video-speed |
 
 #### Primary: CDP click via background.js
 
@@ -173,10 +187,9 @@ When the skip button is visible:
 3. Sends `{ type: "adskip:click", x, y }` to the background service worker
 4. Background attaches `chrome.debugger`, dispatches `mouseMoved` → `mousePressed` → `mouseReleased`, detaches
 5. YouTube's handler receives `isTrusted: true` and accepts the click
+6. Ad ends naturally — no video manipulation needed
 
-A `cdpPending` flag prevents spamming CDP requests on every 250ms poll cycle.
-
-#### Fallback: Video manipulation
+#### Fallback: Video manipulation (only when necessary)
 
 ```js
 function skipAd() {
@@ -202,9 +215,12 @@ function skipAd() {
 }
 ```
 
-Runs in parallel with CDP click — always active as a safety net. Kicks in for:
-- Bumper ads (no skip button exists)
-- CDP failure (debugger already attached, tab closed, etc.)
+Only runs when:
+- No skip button exists (bumper ads)
+- CDP was attempted and failed (debugger already attached, error, etc.)
+
+This is the key anti-detection measure: video-speed is a last resort, not a
+parallel accompaniment.
 
 ### 4.4 Playback Restore
 

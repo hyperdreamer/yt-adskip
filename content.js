@@ -1,9 +1,9 @@
 /**
  * YT AdSkip - Content Script
  *
- * Skips YouTube ads by speeding through them (playbackRate + seek).
- * YouTube rejects synthetic click events (isTrusted check), so we
- * bypass the DOM event system entirely via video manipulation.
+ * Skips YouTube ads via CDP mouse clicks (isTrusted: true) when the skip
+ * button is visible, with video-speed (16× playbackRate + seek) as fallback
+ * for bumper ads or CDP failures. Does NOT block ads.
  */
 
 (function () {
@@ -151,14 +151,14 @@
   // Main loop
   // ---------------------------------------------------------------------------
 
-  let cdpPending = false;
+  let cdpResult = null; // null | 'pending' | 'ok' | 'fail'
 
   function trySkipAd() {
     if (!enabled) return;
 
     if (!isAdPlaying()) {
       adStartTime = 0;
-      cdpPending = false;
+      cdpResult = null;
       return;
     }
 
@@ -173,24 +173,29 @@
     const elapsed = Date.now() - adStartTime;
     updateOverlay('AD ' + (elapsed / 1000).toFixed(1) + 's | state=' + getAdState());
     if (elapsed > MIN_AD_BEFORE_SKIP_MS) {
-      // Try CDP click on visible skip button (isTrusted: true)
-      if (!cdpPending) {
-        const btn = findSkipButton();
-        if (btn) {
-          cdpPending = true;
+      const btn = findSkipButton();
+
+      if (btn) {
+        // Skip button exists — use CDP click, not video-speed
+        if (cdpResult === null) {
+          cdpResult = 'pending';
           updateOverlay('🖱 CDP click');
           tryCdpClick(btn).then((ok) => {
-            cdpPending = false;
-            if (ok) {
-              LOG('✅ CDP click succeeded');
-            }
+            cdpResult = ok ? 'ok' : 'fail';
+            if (ok) LOG('✅ CDP click succeeded');
+            else     LOG('❌ CDP click failed, will fall back');
           });
+        } else if (cdpResult === 'fail') {
+          // CDP failed — fall back to video-speed
+          skipAd();
+          updateOverlay('⏩ video-speed fallback');
         }
+        // cdpResult === 'ok' or 'pending': do nothing, CDP handled/will handle it
+      } else {
+        // No skip button (bumper ad) — video-speed immediately
+        skipAd();
+        updateOverlay('⏩ bumper ad');
       }
-      // Always run video-speed fallback in parallel —
-      // it kicks in if CDP fails or no skip button exists
-      skipAd();
-      updateOverlay('⏩ skipping');
     }
   }
 
@@ -215,9 +220,11 @@
     adStartHandler = function () {
       if (!enabled) return;
       adStartTime = Date.now();
+      cdpResult = null;
     };
     adFinishHandler = function () {
       adStartTime = 0;
+      cdpResult = null;
       restorePlayback();
     };
 
@@ -313,6 +320,7 @@
 
     document.addEventListener('yt-navigate-finish', function () {
       adStartTime = 0;
+      cdpResult = null;
       hookYouTubeEvents();
     });
   }
