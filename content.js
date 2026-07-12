@@ -90,26 +90,27 @@
   // ---------------------------------------------------------------------------
 
   function findSkipButton() {
-    // Try known selectors
+    // Try known YouTube ad skip button selectors.
+    // NOTE: button[aria-label*="Skip"] intentionally NOT used —
+    // it matches the off-screen "Skip navigation" accessibility button.
     const selectors = [
       '.ytp-ad-skip-button-modern',
       '.ytp-ad-skip-button',
       '.ytp-skip-ad-button',
       '.ytp-ad-skip-button-container .ytp-ad-skip-button',
-      'button[aria-label*="Skip"]',
     ];
     for (const sel of selectors) {
       try {
         const btn = document.querySelector(sel);
-        if (btn && btn.offsetParent !== null && !btn.disabled) {
-          const r = btn.getBoundingClientRect();
-          if (r.width > 0 && r.height > 0) {
-            return {
-              x: Math.round(r.left + r.width / 2),
-              y: Math.round(r.top + r.height / 2),
-            };
-          }
-        }
+        if (!btn || btn.offsetParent === null || btn.disabled) continue;
+        const r = btn.getBoundingClientRect();
+        // Must be on-screen (reject off-screen elements like Skip navigation)
+        if (r.width <= 0 || r.height <= 0) continue;
+        if (r.y < 0 || r.y > window.innerHeight) continue;
+        return {
+          x: Math.round(r.left + r.width / 2),
+          y: Math.round(r.top + r.height / 2),
+        };
       } catch (_) {}
     }
     return null;
