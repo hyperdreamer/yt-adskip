@@ -1,13 +1,14 @@
 # YT AdSkip
 
 A tiny Manifest V3 Chrome extension that automatically skips YouTube
-ads by speeding through them. YouTube rejects programmatic clicks
-(`isTrusted` check), so the extension bypasses the DOM event system
-entirely via video manipulation.
+ads. It uses Chrome DevTools Protocol (CDP) to generate real mouse
+clicks (`isTrusted: true`) on the skip button, with a video-speed
+fallback (16× playback + seek) for bumper ads and edge cases.
 
-It does **not** block or hide ads — it races through them at 16× speed
-and seeks to the end, then restores normal playback when the ad finishes.
+It does **not** block or hide ads — the ads still load normally.
 
+- CDP clicks via `chrome.debugger` `Input.dispatchMouseEvent` — YouTube accepts them
+- Video-speed fallback for unskippable bumper ads or CDP failures
 - Pure vanilla JS — no build step, no dependencies, no tracking
 - 250 ms polling + YouTube's native `onAdStart`/`onAdFinish` events
 - SPA-aware: survives YouTube's history-based navigation
@@ -37,28 +38,29 @@ and seeks to the end, then restores normal playback when the ad finishes.
 
 ## How it works
 
-YouTube rejects synthetic click events (`isTrusted` check), so clicking the
-"Skip Ad" button programmatically does nothing. The content script
-(`content.js`) bypasses this entirely by manipulating the `<video>` element:
+YouTube rejects synthetic click events (`isTrusted` check), so DOM-synthesized
+clicks (`.click()`, `MouseEvent`) are ignored. The extension uses a two-tier
+approach:
 
-1. **Ad detection** — Uses YouTube's internal `getAdState()` API on
+1. **CDP click** (primary) — The content script finds the skip button, sends
+   its viewport coordinates to the background service worker, which attaches
+   Chrome DevTools Protocol and dispatches real `mouseMoved` →
+   `mousePressed` → `mouseReleased` events. These have `isTrusted: true` and
+   YouTube accepts them.
+
+2. **Video-speed** (fallback) — For bumper ads with no skip button, or when
+   CDP fails (debugger already attached), the content script sets the video's
+   `playbackRate` to 16× and mutes audio, then seeks `currentTime` to near
+   `duration` to trigger ad completion.
+
+3. **Ad detection** — Uses YouTube's internal `getAdState()` API on
    `#movie_player` plus CSS class checks (`ad-showing`, `ad-interrupting`).
    Also hooks YouTube's `onAdStart`/`onAdFinish` player events for
    reliable ad-lifecycle tracking.
 
-2. **Speed through** — Sets the video's `playbackRate` to 16× and mutes
-   audio during the ad, recording the original rate and mute state.
-
-3. **Seek to end** — Once at 16×, seeks `currentTime` to near the video's
-   `duration` to trigger ad completion immediately.
-
 4. **Restore** — When the ad finishes (detected via `onAdFinish` or polling),
    restores the original `playbackRate` and mute state so the main video
    plays normally.
-
-5. **Best-effort click** — Also attempts a full `PointerEvent`+`MouseEvent`
-   sequence on the skip button as a harmless fallback (usually rejected by
-   YouTube).
 
 A 250 ms polling loop and `yt-navigate-finish` event listener keep detection
 working across SPA navigations.
@@ -71,7 +73,8 @@ After each ad detection, the script increments a counter in
 ```
 yt-adskip/
 ├── manifest.json          # MV3 manifest
-├── content.js             # Content script: ad detection + seek skip
+├── background.js          # CDP mouse click handler (service worker)
+├── content.js             # Content script: ad detection + CDP click + video-speed
 ├── popup/
 │   ├── popup.html         # Popup UI
 │   ├── popup.js           # Toggle + stats

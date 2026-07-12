@@ -117,36 +117,48 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Best-effort click (doesn't work due to isTrusted, but harmless)
+  // CDP click via background script — generates isTrusted: true mouse events
   // ---------------------------------------------------------------------------
 
-  function tryClickSkipButton() {
+  /** Find the skip button and get its viewport-relative center coordinates. */
+  function findSkipButton() {
     const btn = document.querySelector('.ytp-ad-skip-button-modern') ||
                 document.querySelector('.ytp-ad-skip-button') ||
                 document.querySelector('.ytp-skip-ad-button');
-    if (!btn || btn.offsetParent === null || btn.disabled) return;
-    try {
-      const r = btn.getBoundingClientRect();
-      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-      const init = { bubbles: true, cancelable: true, composed: true, view: window,
-        clientX: cx, clientY: cy, screenX: cx, screenY: cy, button: 0, buttons: 1 };
-      btn.dispatchEvent(new PointerEvent('pointerdown', Object.assign({}, init, { pointerType: 'mouse', pointerId: 1, isPrimary: true })));
-      btn.dispatchEvent(new MouseEvent('mousedown', init));
-      btn.dispatchEvent(new PointerEvent('pointerup', Object.assign({}, init, { pointerType: 'mouse', pointerId: 1, isPrimary: true })));
-      btn.dispatchEvent(new MouseEvent('mouseup', init));
-      btn.dispatchEvent(new MouseEvent('click', init));
-    } catch (_) {}
+    if (!btn || btn.offsetParent === null || btn.disabled) return null;
+    const r = btn.getBoundingClientRect();
+    return {
+      x: Math.round(r.left + r.width / 2),
+      y: Math.round(r.top + r.height / 2),
+    };
+  }
+
+  /** CDP click — real mouse events via Chrome DevTools Protocol. */
+  function tryCdpClick(btn) {
+    return new Promise((resolve) => {
+      try {
+        chrome.runtime.sendMessage(
+          { type: 'adskip:click', x: btn.x, y: btn.y },
+          (resp) => resolve(resp && resp.ok === true)
+        );
+      } catch (_) {
+        resolve(false);
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------
   // Main loop
   // ---------------------------------------------------------------------------
 
+  let cdpPending = false;
+
   function trySkipAd() {
     if (!enabled) return;
 
     if (!isAdPlaying()) {
       adStartTime = 0;
+      cdpPending = false;
       return;
     }
 
@@ -161,7 +173,22 @@
     const elapsed = Date.now() - adStartTime;
     updateOverlay('AD ' + (elapsed / 1000).toFixed(1) + 's | state=' + getAdState());
     if (elapsed > MIN_AD_BEFORE_SKIP_MS) {
-      tryClickSkipButton();
+      // Try CDP click on visible skip button (isTrusted: true)
+      if (!cdpPending) {
+        const btn = findSkipButton();
+        if (btn) {
+          cdpPending = true;
+          updateOverlay('🖱 CDP click');
+          tryCdpClick(btn).then((ok) => {
+            cdpPending = false;
+            if (ok) {
+              LOG('✅ CDP click succeeded');
+            }
+          });
+        }
+      }
+      // Always run video-speed fallback in parallel —
+      // it kicks in if CDP fails or no skip button exists
       skipAd();
       updateOverlay('⏩ skipping');
     }

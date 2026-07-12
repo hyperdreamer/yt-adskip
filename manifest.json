@@ -1,14 +1,18 @@
 {
   "manifest_version": 3,
   "name": "YT AdSkip",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "minimum_chrome_version": "96",
   "author": "hyperdreamer",
   "homepage_url": "https://github.com/hyperdreamer/yt-adskip",
-  "description": "Automatically skips YouTube ads by speeding through them.",
+  "description": "Automatically skips YouTube ads via CDP clicks with video-speed fallback.",
   "permissions": [
-    "storage"
+    "storage",
+    "debugger"
   ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "host_permissions": [
     "*://www.youtube.com/*"
   ],
