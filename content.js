@@ -224,7 +224,7 @@
         };
         chrome.storage.local.set({ stats: stats, today: today });
       });
-    } catch (_) {}
+    } catch (e) { console.warn('[YT AdSkip] flushStats error', e); }
   }
 
   function bumpStats() {
@@ -249,8 +249,18 @@
   // Enable/disable
   // ---------------------------------------------------------------------------
 
-  function enable()  { enabled = true; }
-  function disable() { enabled = false; adStartTime = 0; restorePlayback(); }
+  function enable() {
+    enabled = true;
+    if (!pollTimer) pollTimer = setInterval(trySkipAd, POLL_INTERVAL_MS);
+  }
+  function disable() {
+    enabled = false;
+    adStartTime = 0;
+    restorePlayback();
+    if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+    flushStats();
+    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  }
 
   // ---------------------------------------------------------------------------
   // Storage listener — single handler for all keys
@@ -262,7 +272,7 @@
       if (changes.enabled) changes.enabled.newValue ? enable() : disable();
       if (changes.debugOverlay) setDebugOverlay(changes.debugOverlay.newValue);
     });
-  } catch (_) {}
+  } catch (e) { console.warn('[YT AdSkip] onChanged error', e); }
 
   // ---------------------------------------------------------------------------
   // Init
@@ -284,8 +294,12 @@
   startAll();
   try {
     chrome.storage.local.get(['enabled', 'debugOverlay'], function (data) {
+      if (chrome.runtime.lastError) {
+        console.warn('[YT AdSkip] init storage read failed', chrome.runtime.lastError);
+        return;
+      }
       if (data && data.enabled === false) disable();
       if (data && data.debugOverlay) setDebugOverlay(true);
     });
-  } catch (_) {}
+  } catch (e) { console.warn('[YT AdSkip] init error', e); }
 })();
