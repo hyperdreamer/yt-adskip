@@ -21,7 +21,7 @@ clicked like a real user would.
 1. Clone or download this repository.
 2. Open Chrome and navigate to `chrome://extensions/`.
 3. Toggle **Developer mode** on (top-right).
-4. Click **Load unpacked** and select the `yt-adskip` directory
+4. Click **Load unpacked** and select the `extension/` directory
    (the one containing `manifest.json`).
 5. Visit `https://www.youtube.com/` and start watching. The extension icon
    appears in the toolbar; click it to toggle the extension and view stats.
@@ -64,17 +64,20 @@ After each ad detection, the script increments a counter in
 
 ```
 yt-adskip/
-├── manifest.json          # MV3 manifest
-├── background.js          # CDP mouse click handler (service worker)
-├── content.js             # Ad detection + CDP click
-├── popup/
-│   ├── popup.html         # Popup UI
-│   ├── popup.js           # Toggle + stats
-│   └── popup.css          # Dark theme styles
-├── icons/
-│   ├── icon16.png
-│   ├── icon48.png
-│   ├── icon128.png
+├── extension/
+│   ├── manifest.json          # MV3 manifest
+│   ├── background.js          # CDP mouse click handler (service worker)
+│   ├── content.js             # Ad detection + CDP click
+│   ├── popup/
+│   │   ├── popup.html         # Popup UI
+│   │   ├── popup.js           # Toggle + stats
+│   │   └── popup.css          # Dark theme styles
+│   └── icons/
+│       ├── icon16.png
+│       ├── icon48.png
+│       └── icon128.png
+├── tests/
+│   └── test_adskip.py         # End-to-end test
 ├── README.md
 ├── TESTING.md
 ```

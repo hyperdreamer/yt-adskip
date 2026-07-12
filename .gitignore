@@ -10,3 +10,6 @@ dist/
 !.env.example
 __pycache__/
 *.pyc
+
+# Test profiles (Playwright persistent browser data)
+tests/profiles/

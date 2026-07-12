@@ -27,21 +27,25 @@ mousePressed → mouseReleased, then detaches.
 
 ```
 yt-adskip/
-├── manifest.json          # MV3 extension manifest
-├── background.js          # Service worker: CDP mouse click handler
-├── content.js             # Content script: ad detection + CDP click + video-speed
-├── popup/
-│   ├── popup.html         # Extension popup UI
-│   ├── popup.js           # Popup logic: toggle, stats
-│   └── popup.css          # Popup styles
-├── icons/
-│   ├── icon16.png         # 16×16 toolbar icon
-│   ├── icon48.png         # 48×48 extensions page icon
-│   └── icon128.png        # 128×128 store listing / install icon
-├── AGENTS.md              # This file (architectural spec)
-├── CLAUDE.md              # Original architecture sketch
-├── TESTING.md             # End-to-end test instructions (Playwright + CDP)
-└── README.md              # User-facing readme
+├── extension/               # Chrome extension source
+│   ├── manifest.json         # MV3 manifest
+│   ├── background.js         # CDP service worker
+│   ├── content.js            # Ad detection + CDP click
+│   ├── popup/
+│   │   ├── popup.html
+│   │   ├── popup.js
+│   │   └── popup.css
+│   └── icons/
+│       ├── icon16.png
+│       ├── icon48.png
+│       └── icon128.png
+├── tests/
+│   ├── test_adskip.py        # End-to-end Playwright test
+│   └── profiles/             # Test browser profiles (git-ignored)
+├── AGENTS.md                 # This file (architectural spec)
+├── CLAUDE.md                 # Original architecture sketch
+├── TESTING.md                # Test instructions
+└── README.md                 # User-facing readme
 ```
 
 ---
