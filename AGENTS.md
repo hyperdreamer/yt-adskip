@@ -40,6 +40,7 @@ yt-adskip/
 │   └── icon128.png        # 128×128 store listing / install icon
 ├── AGENTS.md              # This file (architectural spec)
 ├── CLAUDE.md              # Original architecture sketch
+├── TESTING.md             # End-to-end test instructions (Playwright + CDP)
 └── README.md              # User-facing readme
 ```
 

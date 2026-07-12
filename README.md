@@ -76,6 +76,7 @@ yt-adskip/
 │   ├── icon48.png
 │   ├── icon128.png
 ├── README.md
+├── TESTING.md
 ```
 
 ## Privacy
