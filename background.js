@@ -11,13 +11,18 @@
 
 'use strict';
 
+const LOG = console.log.bind(console, '[YT AdSkip BG]');
+
 // ── CDP mouse click ──────────────────────────────────────────────────
 
 async function cdpClick(tabId, x, y) {
-  // Attach
+  LOG('cdpClick: tab=' + tabId + ' x=' + x + ' y=' + y);
+
   try {
     await attachDebugger(tabId);
+    LOG('CDP attached to tab ' + tabId);
   } catch (e) {
+    LOG('CDP attach FAILED: ' + e.message);
     return { ok: false, error: 'attach failed: ' + e.message };
   }
 
