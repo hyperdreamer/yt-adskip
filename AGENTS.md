@@ -1,32 +1,25 @@
 # AGENTS.md — YouTube Ad-Skip Chrome Extension Spec
 
 > **Target**: Manifest V3 Chrome Extension  
-> **Approach**: Seeking-based ad skip — bypasses YouTube's `isTrusted` click rejection via video manipulation.  
-> **Non-goal**: Does NOT block or hide ads — only speeds through them.  
+> **Approach**: CDP mouse click on the skip button — generates `isTrusted: true` events.  
+> **Non-goal**: Does NOT block ads, does NOT manipulate video playback.  
 > **Constraint**: Pure vanilla JS, no build tooling, no external dependencies, no tracking.
 
 ---
 
-## 1. Core Design Decision: CDP Clicks + Video-Speed Fallback
+## 1. Core Design Decision: CDP Click Only
 
 YouTube's skip button handler **requires `isTrusted: true` click events**.
-DOM-synthesized events (`.click()`, `PointerEvent`, `MouseEvent` dispatch) are
-all rejected by YouTube's React-based player UI.
+DOM-synthesized events are rejected. Video-speed manipulation (playbackRate +
+seek) is detectable as abnormal playback behavior and triggers anti-adblock.
 
-**Solution**: Two-tier approach:
+**Solution**: CDP (Chrome DevTools Protocol) `Input.dispatchMouseEvent` via
+`chrome.debugger`. These are genuine browser-level mouse events with
+`isTrusted: true` — YouTube accepts them as real user clicks.
 
-1. **Primary — CDP click**: When the skip button is visible, the content script
-   sends its viewport coordinates to the background service worker, which
-   attaches Chrome DevTools Protocol (`chrome.debugger`), dispatches real
-   `Input.dispatchMouseEvent` (mouseMoved → mousePressed → mouseReleased),
-   then detaches. CDP events are genuine browser-level events with
-   `isTrusted: true` — YouTube accepts them.
-
-2. **Fallback — Video-speed**: For bumper ads (no skip button) or when CDP
-   fails (debugger already attached, error), the extension falls back to
-   setting `playbackRate = 16` and seeking to near `duration` on the
-   `<video>` element. This still achieves the ad-skip result by racing
-   through the ad at 16× speed.
+The content script finds the skip button, sends viewport coordinates to the
+background service worker, which attaches CDP, dispatches mouseMoved →
+mousePressed → mouseReleased, then detaches.
 
 ---
 
@@ -163,94 +156,20 @@ function trySkipAd() {
 The poll runs every 250 ms — fast enough to catch ad transitions quickly,
 slow enough to avoid triggering YouTube's anti-automation heuristics.
 
-### 4.3 Skip Strategy — CDP Click First, Video-Speed Only as Fallback
+### 4.3 Skip Strategy — CDP Click
 
-**Critical design choice**: video-speed (16× playbackRate + seek) is detectable
-by YouTube as abnormal playback behavior. It must ONLY run when there's
-genuinely no skip button (bumper ads) or CDP has been attempted and failed.
-It must NEVER run alongside a CDP click on a skippable ad.
+When the skip button is visible (after 1s grace period):
 
-The `cdpResult` state machine enforces this:
-
-| State | Meaning | Action |
-|---|---|---|
-| `null` | No action taken yet for this ad | Find skip button, try CDP |
-| `'pending'` | CDP click dispatched, awaiting result | Do nothing, wait |
-| `'ok'` | CDP click succeeded | Do nothing, ad ends naturally |
-| `'fail'` | CDP click failed | Fall back to video-speed |
-
-#### Primary: CDP click via background.js
-
-When the skip button is visible:
 1. `findSkipButton()` locates `.ytp-ad-skip-button-modern` / `.ytp-ad-skip-button` / `.ytp-skip-ad-button`
 2. Computes viewport center coordinates via `getBoundingClientRect()`
 3. Sends `{ type: "adskip:click", x, y }` to the background service worker
 4. Background attaches `chrome.debugger`, dispatches `mouseMoved` → `mousePressed` → `mouseReleased`, detaches
 5. YouTube's handler receives `isTrusted: true` and accepts the click
-6. Ad ends naturally — no video manipulation needed
+6. Ad ends naturally
 
-#### Fallback: Video manipulation (only when necessary)
+A `cdpAttempted` flag ensures only one click per ad — no spamming.
 
-```js
-function skipAd() {
-  const video = document.querySelector('video');
-  if (!video || !isFinite(video.duration)) return false;
-
-  // Step 1: Speed up to 16x and mute
-  if (video.playbackRate !== PLAYBACK_SPEED) {
-    originalPlaybackRate = video.playbackRate || 1;
-    wasMuted = video.muted;
-    video.muted = true;
-    video.playbackRate = PLAYBACK_SPEED;
-    return true;
-  }
-
-  // Step 2: Seek near end to trigger ad completion
-  const target = Math.max(0, video.duration - 0.5);
-  if (target > video.currentTime + 0.5) {
-    video.currentTime = target;
-    return true;
-  }
-  return false;
-}
-```
-
-Only runs when:
-- No skip button exists (bumper ads)
-- CDP was attempted and failed (debugger already attached, error, etc.)
-
-This is the key anti-detection measure: video-speed is a last resort, not a
-parallel accompaniment.
-
-### 4.4 Playback Restore
-
-```js
-function restorePlayback() {
-  const video = document.querySelector('video');
-  if (!video) return;
-  if (video.playbackRate === PLAYBACK_SPEED) {
-    video.playbackRate = originalPlaybackRate || 1;
-    video.muted = wasMuted;
-  }
-}
-```
-
-Called when the ad finishes (detected via polling or `onAdFinish`).
-Restores the video to its original `playbackRate` and mute state so the
-main content plays normally.
-
-### 4.5 Best-Effort DOM Click (Harmless)
-
-```js
-function tryDomClick(btn) {
-  try { btn.click(); } catch (_) {}
-}
-```
-
-Redundant with CDP — kept as a minimal fallback in case the message channel
-is broken. YouTube rejects the `.click()` event but it costs nothing.
-
-### 4.6 Background Service Worker (`background.js`)
+### 4.4 Background Service Worker (`background.js`)
 
 ```js
 async function cdpClick(tabId, x, y) {
@@ -264,10 +183,8 @@ async function cdpClick(tabId, x, y) {
 
 `Input.dispatchMouseEvent` generates real OS-level mouse events at the
 specified viewport coordinates. These pass YouTube's `isTrusted` check.
-On error (already attached, tab closed), the promise rejects and content.js
-falls back to video-speed.
 
-### 4.6 SPA Navigation Handling
+### 4.5 SPA Navigation Handling
 
 ```js
 document.addEventListener('yt-navigate-finish', function () {
@@ -360,12 +277,12 @@ state indication, not the icon.
 
 | Scenario | Handling |
 |---|---|
-| Pre-roll ad | Ad detected via `getAdState()`/CSS classes → sped through at 16× |
+| Pre-roll ad | Ad detected via `getAdState()`/CSS classes → CDP click on skip button |
 | Mid-roll ad | Same detection, same handling. `onAdStart` fires reliably. |
-| Bumper ads (6s unskippable) | No skip button exists — sped through just like any other ad |
+| Bumper ads (6s unskippable) | No skip button exists — cannot be skipped. Limitation. |
 | Ad pods (multiple ads) | Each ad triggers its own `onAdStart`/`onAdFinish` cycle |
-| SPA navigation during ad | `yt-navigate-finish` resets ad state and restores playback |
-| User disables mid-ad | Playback restored immediately |
+| SPA navigation during ad | `yt-navigate-finish` resets ad state |
+| User disables mid-ad | `disable()` clears state, no-op until re-enabled |
 | YouTube in background tab | Content script continues running — ad still skipped |
 | Embedded players | Out of scope — `host_permissions` scoped to `www.youtube.com` |
 | YouTube Shorts | Different player — detection likely won't match, gracefully no-ops |
@@ -375,17 +292,19 @@ state indication, not the icon.
 
 ## 9. Research & Rationale
 
-All click-based approaches fail because YouTube's framework (React-based
-player UI) requires `isTrusted: true` click events. Attempted and abandoned:
+All DOM-synthesized click approaches fail because YouTube's React-based
+player requires `isTrusted: true` click events:
 
 - `el.click()` — no effect
 - `PointerEvent` dispatch — `isTrusted: false`, rejected
 - `MouseEvent` dispatch — same
-- Full `pointerdown` → `mousedown` → `pointerup` → `mouseup` → `click` sequence — rejected
-- `onAdUxClicked` internal API probing — unreliable
+- Video-speed manipulation (playbackRate + seek) — detectable as abnormal
+  playback behavior, triggers anti-adblock interstitial
 
-The seeking approach (16× `playbackRate` + `seekTo()`) is battle-tested
-and the only mechanism confirmed to work across YouTube's current player.
+CDP `Input.dispatchMouseEvent` is the only mechanism that produces genuine
+`isTrusted: true` mouse events from within a Chrome extension. The
+`chrome.debugger` API attaches at the browser level and dispatches OS-level
+input events — indistinguishable from real user interaction.
 
 ---
 

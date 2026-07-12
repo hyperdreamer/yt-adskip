@@ -3,10 +3,10 @@
 > **⚠️ This is the original architecture sketch. For the current, detailed spec, see [AGENTS.md](./AGENTS.md).**
 
 ## Overview
-A Chrome Manifest V3 extension that automatically skips YouTube ads.
-Primary approach: CDP (Chrome DevTools Protocol) mouse clicks on the skip button
-(`isTrusted: true`). Fallback: video-speed manipulation (16× playbackRate + seek).
-Does NOT block ads — only skips them.
+A Chrome Manifest V3 extension that automatically clicks YouTube's "Skip Ad"
+button using CDP (Chrome DevTools Protocol) mouse events. CDP generates
+`isTrusted: true` clicks — indistinguishable from real user interaction.
+Does NOT block ads, does NOT manipulate video playback.
 
 ## Architecture
 
@@ -19,13 +19,12 @@ Does NOT block ads — only skips them.
 
 2. **background.js** — Service worker
    - Handles CDP attach/detach
-   - Dispatches `Input.dispatchMouseEvent` at viewport coordinates
+   - Dispatches `Input.dispatchMouseEvent` (mouseMoved → press → release)
    - Returns `{ok: true/false}` to content script
 
 3. **content.js** — Content script injected into YouTube pages
-   - Ad detection via `getAdState()` API + CSS classes + `onAdStart`/`onAdFinish` events
-   - CDP click: sends skip button coordinates to background.js
-   - Video-speed fallback: 16× playbackRate + seek to near duration
+   - Ad detection via `getAdState()` + CSS classes + `onAdStart`/`onAdFinish`
+   - Finds skip button, sends viewport coordinates to background.js
    - 250ms polling loop + SPA navigation handling
 
 4. **popup/** — Popup UI
@@ -37,10 +36,10 @@ Does NOT block ads — only skips them.
 ### Detection Strategy
 - **Primary**: YouTube's internal `getAdState()` API on `#movie_player`
 - **Fallback**: CSS class checks (`ad-showing`, `ad-interrupting`)
-- **Events**: `onAdStart` / `onAdFinish` for reliable lifecycle tracking
+- **Events**: `onAdStart` / `onAdFinish`
 - **Skip selectors**: `.ytp-ad-skip-button-modern`, `.ytp-ad-skip-button`, `.ytp-skip-ad-button`
-- **Navigation handling**: `yt-navigate-finish` event with idempotent re-hook
-- **Interval**: 250ms polling as continuous safety net
+- **Navigation**: `yt-navigate-finish` event with idempotent re-hook
+- **Interval**: 250ms polling
 
 ### Files
 ```
@@ -61,12 +60,11 @@ yt-adskip/
 
 ### Key Design Decisions
 - No external dependencies — pure vanilla JS
-- No ad blocking — only skips ads (CDP click + video-speed)
+- No ad blocking — only clicks skip
+- No video manipulation — zero playback changes
 - No tracking/analytics
 - Works across SPA navigations
-- Small footprint, fast execution
 
 ### Constraints
 - No build tooling required (no webpack/vite)
 - No external API calls
-- Must work with YouTube's current DOM structure (2026)

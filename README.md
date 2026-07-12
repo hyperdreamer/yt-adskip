@@ -1,14 +1,14 @@
 # YT AdSkip
 
-A tiny Manifest V3 Chrome extension that automatically skips YouTube
-ads. It uses Chrome DevTools Protocol (CDP) to generate real mouse
-clicks (`isTrusted: true`) on the skip button, with a video-speed
-fallback (16× playback + seek) for bumper ads and edge cases.
+A tiny Manifest V3 Chrome extension that automatically clicks YouTube's
+"Skip Ad" button using Chrome DevTools Protocol (CDP). CDP generates
+real mouse events (`isTrusted: true`) that YouTube accepts.
 
-It does **not** block or hide ads — the ads still load normally.
+It does **not** block ads — the ads load normally, then the skip button is
+clicked like a real user would.
 
-- CDP clicks via `chrome.debugger` `Input.dispatchMouseEvent` — YouTube accepts them
-- Video-speed fallback for unskippable bumper ads or CDP failures
+- CDP `Input.dispatchMouseEvent` via `chrome.debugger` — YouTube accepts the click
+- No video-speed manipulation — zero playback changes
 - Pure vanilla JS — no build step, no dependencies, no tracking
 - 250 ms polling + YouTube's native `onAdStart`/`onAdFinish` events
 - SPA-aware: survives YouTube's history-based navigation
@@ -39,28 +39,20 @@ It does **not** block or hide ads — the ads still load normally.
 ## How it works
 
 YouTube rejects synthetic click events (`isTrusted` check), so DOM-synthesized
-clicks (`.click()`, `MouseEvent`) are ignored. The extension uses a two-tier
-approach:
+clicks are ignored. The extension uses CDP to generate real mouse events:
 
-1. **CDP click** (primary) — The content script finds the skip button, sends
-   its viewport coordinates to the background service worker, which attaches
-   Chrome DevTools Protocol and dispatches real `mouseMoved` →
-   `mousePressed` → `mouseReleased` events. These have `isTrusted: true` and
-   YouTube accepts them.
-
-2. **Video-speed** (fallback) — For bumper ads with no skip button, or when
-   CDP fails (debugger already attached), the content script sets the video's
-   `playbackRate` to 16× and mutes audio, then seeks `currentTime` to near
-   `duration` to trigger ad completion.
-
-3. **Ad detection** — Uses YouTube's internal `getAdState()` API on
+1. **Ad detection** — Uses YouTube's internal `getAdState()` API on
    `#movie_player` plus CSS class checks (`ad-showing`, `ad-interrupting`).
-   Also hooks YouTube's `onAdStart`/`onAdFinish` player events for
-   reliable ad-lifecycle tracking.
+   Also hooks YouTube's `onAdStart`/`onAdFinish` player events.
 
-4. **Restore** — When the ad finishes (detected via `onAdFinish` or polling),
-   restores the original `playbackRate` and mute state so the main video
-   plays normally.
+2. **CDP click** — The content script finds the skip button, computes its
+   viewport center coordinates, and sends them to the background service
+   worker. The background worker attaches `chrome.debugger`, dispatches
+   `mouseMoved` → `mousePressed` → `mouseReleased`, then detaches. These
+   events have `isTrusted: true` — YouTube accepts them as real user clicks.
+
+3. **Ad ends naturally** — No video manipulation needed. The ad finishes
+   as if the user clicked Skip themselves.
 
 A 250 ms polling loop and `yt-navigate-finish` event listener keep detection
 working across SPA navigations.
@@ -74,7 +66,7 @@ After each ad detection, the script increments a counter in
 yt-adskip/
 ├── manifest.json          # MV3 manifest
 ├── background.js          # CDP mouse click handler (service worker)
-├── content.js             # Content script: ad detection + CDP click + video-speed
+├── content.js             # Ad detection + CDP click
 ├── popup/
 │   ├── popup.html         # Popup UI
 │   ├── popup.js           # Toggle + stats
@@ -101,7 +93,7 @@ YT AdSkip runs entirely on your machine. It:
 - YouTube Music (`music.youtube.com`) and YouTube Shorts ads are not
   targeted — the content script match pattern is scoped to
   `www.youtube.com` only.
-- 6-second "bumper" ads still get sped through — no skip button needed.
+- 6-second "bumper" ads have no skip button — cannot be skipped.
 - Embedded YouTube players on third-party sites are out of scope.
 
 ## License

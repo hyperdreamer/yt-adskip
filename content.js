@@ -1,9 +1,9 @@
 /**
  * YT AdSkip - Content Script
  *
- * Skips YouTube ads via CDP mouse clicks (isTrusted: true) when the skip
- * button is visible, with video-speed (16× playbackRate + seek) as fallback
- * for bumper ads or CDP failures. Does NOT block ads.
+ * Auto-clicks YouTube's "Skip Ad" button using CDP (Chrome DevTools Protocol)
+ * mouse events. CDP generates isTrusted: true clicks that YouTube accepts.
+ * No ad blocking, no video-speed manipulation — just a real click on Skip.
  */
 
 (function () {
@@ -14,7 +14,6 @@
 
   const POLL_INTERVAL_MS = 250;
   const MIN_AD_BEFORE_SKIP_MS = 1000;
-  const PLAYBACK_SPEED = 16;
 
   // ---------------------------------------------------------------------------
   // State
@@ -23,15 +22,13 @@
   let enabled = true;
   let pollTimer = null;
   let adStartTime = 0;
-  let originalPlaybackRate = 1;
-  let wasMuted = false;
   let initialized = false;
 
   // Event listener references for idempotent re-hook on SPA navigation.
   let adStartHandler = null;
   let adFinishHandler = null;
   let hookRetries = 0;
-  const MAX_HOOK_RETRIES = 40; // ~20 s max wait for #movie_player
+  const MAX_HOOK_RETRIES = 40;
 
   // ---------------------------------------------------------------------------
   // Ad detection
@@ -81,42 +78,6 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Skip strategy: speed through ad
-  // ---------------------------------------------------------------------------
-
-  function skipAd() {
-    const video = document.querySelector('video');
-    if (!video || !isFinite(video.duration)) return false;
-
-    if (video.playbackRate !== PLAYBACK_SPEED) {
-      originalPlaybackRate = video.playbackRate || 1;
-      wasMuted = video.muted;
-      video.muted = true;
-      video.playbackRate = PLAYBACK_SPEED;
-      LOG('⏩ Speed 16x');
-      return true;
-    }
-
-    // Also seek near end
-    const target = Math.max(0, video.duration - 0.5);
-    if (target > video.currentTime + 0.5) {
-      video.currentTime = target;
-      return true;
-    }
-    return false;
-  }
-
-  function restorePlayback() {
-    const video = document.querySelector('video');
-    if (!video) return;
-    if (video.playbackRate === PLAYBACK_SPEED) {
-      video.playbackRate = originalPlaybackRate || 1;
-      video.muted = wasMuted;
-      LOG('🔄 Restored playback');
-    }
-  }
-
-  // ---------------------------------------------------------------------------
   // CDP click via background script — generates isTrusted: true mouse events
   // ---------------------------------------------------------------------------
 
@@ -151,14 +112,14 @@
   // Main loop
   // ---------------------------------------------------------------------------
 
-  let cdpResult = null; // null | 'pending' | 'ok' | 'fail'
+  let cdpAttempted = false;
 
   function trySkipAd() {
     if (!enabled) return;
 
     if (!isAdPlaying()) {
       adStartTime = 0;
-      cdpResult = null;
+      cdpAttempted = false;
       return;
     }
 
@@ -172,29 +133,16 @@
 
     const elapsed = Date.now() - adStartTime;
     updateOverlay('AD ' + (elapsed / 1000).toFixed(1) + 's | state=' + getAdState());
-    if (elapsed > MIN_AD_BEFORE_SKIP_MS) {
-      const btn = findSkipButton();
 
+    if (elapsed > MIN_AD_BEFORE_SKIP_MS && !cdpAttempted) {
+      const btn = findSkipButton();
       if (btn) {
-        // Skip button exists — use CDP click, not video-speed
-        if (cdpResult === null) {
-          cdpResult = 'pending';
-          updateOverlay('🖱 CDP click');
-          tryCdpClick(btn).then((ok) => {
-            cdpResult = ok ? 'ok' : 'fail';
-            if (ok) LOG('✅ CDP click succeeded');
-            else     LOG('❌ CDP click failed, will fall back');
-          });
-        } else if (cdpResult === 'fail') {
-          // CDP failed — fall back to video-speed
-          skipAd();
-          updateOverlay('⏩ video-speed fallback');
-        }
-        // cdpResult === 'ok' or 'pending': do nothing, CDP handled/will handle it
-      } else {
-        // No skip button (bumper ad) — video-speed immediately
-        skipAd();
-        updateOverlay('⏩ bumper ad');
+        cdpAttempted = true;
+        updateOverlay('🖱 CDP click');
+        tryCdpClick(btn).then((ok) => {
+          if (ok) LOG('✅ CDP click succeeded');
+          else    LOG('❌ CDP click failed');
+        });
       }
     }
   }
@@ -213,19 +161,17 @@
     }
     hookRetries = 0;
 
-    // Remove old listeners before re-attaching (SPA-safe)
     if (adStartHandler) player.removeEventListener('onAdStart', adStartHandler);
     if (adFinishHandler) player.removeEventListener('onAdFinish', adFinishHandler);
 
     adStartHandler = function () {
       if (!enabled) return;
       adStartTime = Date.now();
-      cdpResult = null;
+      cdpAttempted = false;
     };
     adFinishHandler = function () {
       adStartTime = 0;
-      cdpResult = null;
-      restorePlayback();
+      cdpAttempted = false;
     };
 
     player.addEventListener('onAdStart', adStartHandler);
@@ -270,7 +216,6 @@
     }, 500);
   }
 
-  // Flush any pending stats before the page unloads (e.g. SPA navigation away).
   window.addEventListener('beforeunload', function () {
     if (flushTimer) {
       clearTimeout(flushTimer);
@@ -290,14 +235,13 @@
   function disable() {
     enabled = false;
     adStartTime = 0;
-    restorePlayback();
     if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
     flushStats();
     if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
   }
 
   // ---------------------------------------------------------------------------
-  // Storage listener — single handler for all keys
+  // Storage listener
   // ---------------------------------------------------------------------------
 
   try {
@@ -320,12 +264,11 @@
 
     document.addEventListener('yt-navigate-finish', function () {
       adStartTime = 0;
-      cdpResult = null;
+      cdpAttempted = false;
       hookYouTubeEvents();
     });
   }
 
-  // Start immediately, check persisted state async
   startAll();
   try {
     chrome.storage.local.get(['enabled', 'debugOverlay'], function (data) {
