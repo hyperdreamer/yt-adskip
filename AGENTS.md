@@ -130,7 +130,7 @@ function hookYouTubeEvents() {
   if (adFinishHandler) player.removeEventListener('onAdFinish', adFinishHandler);
 
   adStartHandler = function () { adStartTime = Date.now(); };
-  adFinishHandler = function () { adStartTime = 0; restorePlayback(); };
+  adFinishHandler = function () { adStartTime = 0; };
   player.addEventListener('onAdStart', adStartHandler);
   player.addEventListener('onAdFinish', adFinishHandler);
 }
@@ -250,7 +250,7 @@ before the stored state is read.
 When toggled off:
 - `enabled` set to `false` — poll handler no-ops.
 - `adStartTime` reset to `0`.
-- Playback restored (speed back to 1×, unmute if muted).
+- Stats flushed immediately.
 
 When toggled back on:
 - `enabled` set to `true` — poll handler resumes.

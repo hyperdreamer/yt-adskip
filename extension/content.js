@@ -16,7 +16,7 @@
   // Diagnostics — enable debugOverlay in popup or set DEBUG=true for console
   // ---------------------------------------------------------------------------
 
-  const DEBUG = true;
+  const DEBUG = false;
   const LOG = console.log.bind(console, '[YT AdSkip]');
   const WARN = console.warn.bind(console, '[YT AdSkip]');
 
@@ -30,7 +30,7 @@
   let pollTimer = null;
   let adStartTime = 0;
   let initialized = false;
-  let skippedAds = 0; // track this session
+  let adsDetected = 0; // track this session
 
   let adStartHandler = null;
   let adFinishHandler = null;
@@ -158,15 +158,14 @@
 
     if (!adStartTime) {
       adStartTime = Date.now();
-      skippedAds++;
-      LOG('📺 Ad #' + skippedAds + ' detected');
-      updateOverlay('AD #' + skippedAds + ' 0.0s');
-      bumpStats();
+      adsDetected++;
+      LOG('📺 Ad #' + adsDetected + ' detected');
+      updateOverlay('AD #' + adsDetected + ' 0.0s');
       return;
     }
 
     const elapsed = Date.now() - adStartTime;
-    updateOverlay('AD #' + skippedAds + ' ' + (elapsed / 1000).toFixed(1) + 's');
+    updateOverlay('AD #' + adsDetected + ' ' + (elapsed / 1000).toFixed(1) + 's');
 
     if (elapsed < MIN_AD_BEFORE_SKIP_MS) return;
 
@@ -187,6 +186,7 @@
         if (result.ok) {
           LOG('✅ CDP click SUCCEEDED');
           updateOverlay('✅ skipped');
+          bumpStats();
         } else {
           WARN('❌ CDP click FAILED: ' + result.reason);
           updateOverlay('❌ CDP failed: ' + result.reason);
