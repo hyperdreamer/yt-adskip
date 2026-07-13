@@ -188,7 +188,7 @@
           LOG('✅ CDP click SUCCEEDED');
           updateOverlay('✅ skipped');
         } else {
-          WARN('❌ CDP click FAILED:', result.reason);
+          WARN('❌ CDP click FAILED: ' + result.reason);
           updateOverlay('❌ CDP failed: ' + result.reason);
           // Retry on next poll — reset flag so we try again
           cdpAttempted = false;
