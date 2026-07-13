@@ -4,6 +4,10 @@
 Uses Playwright to load the extension, navigate to YouTube,
 click play via CDP (user gesture), and verify ad-skip pipeline.
 
+Strategy:
+- If no ad appears in 2s → move to next video immediately
+- If an ad IS detected → wait up to 30s for skip pipeline
+
 Usage: python3 tests/test_adskip.py
 """
 
@@ -19,6 +23,9 @@ VIDEOS = [
     'hT_nvWreIhg', '0KSOMA3QBU0', 'nfWlot6h_JM', '2Vv-BfVoq4g',
 ]
 
+AD_DETECT_TIMEOUT = 2       # seconds to wait for an ad to appear
+SKIP_WAIT_TIMEOUT = 30      # seconds to wait for skip pipeline once ad seen
+
 
 async def cdp_click(cdp, x, y):
     """Real mouse click via CDP — isTrusted: true."""
@@ -30,6 +37,35 @@ async def cdp_click(cdp, x, y):
     await asyncio.sleep(0.03)
     await cdp.send('Input.dispatchMouseEvent', {
         'type': 'mouseReleased', 'x': x, 'y': y, 'button': 'left', 'buttons': 0, 'clickCount': 1})
+
+
+async def wait_for_ad_or_timeout(page, timeout):
+    """Poll until an ad is detected or timeout expires.
+    Returns True if ad detected, False if timed out with no ad."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        has_ad = await page.evaluate('''() => {
+            const p = document.getElementById('movie_player');
+            if (!p) return false;
+            if (typeof p.getAdState === 'function' && p.getAdState() !== -1) return true;
+            return p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting');
+        }''')
+        if has_ad:
+            return True
+        await asyncio.sleep(0.25)
+    return False
+
+
+async def wait_for_skip_result(events, timeout):
+    """Wait for SUCCEEDED or FAILED in console events. Returns 'success', 'fail', or 'timeout'."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while asyncio.get_event_loop().time() < deadline:
+        if any('SUCCEEDED' in e for e in events):
+            return 'success'
+        if any('FAILED' in e for e in events):
+            return 'fail'
+        await asyncio.sleep(0.3)
+    return 'timeout'
 
 
 async def main():
@@ -64,8 +100,6 @@ async def main():
             def on_console(msg):
                 if 'AdSkip' in msg.text:
                     events.append(msg.text)
-                    if any(k in msg.text for k in ['SUCCEEDED', 'FAILED']):
-                        print(f'    {msg.text}')
             page.on('console', on_console)
 
             tried += 1
@@ -79,7 +113,7 @@ async def main():
                 page.remove_listener('console', on_console)
                 continue
 
-            # Quick play click if paused
+            # Click play if paused (pre-roll ads only appear after user gesture)
             try:
                 await asyncio.sleep(0.8)
                 v = page.locator('#movie_player video').first
@@ -95,25 +129,30 @@ async def main():
             except:
                 pass
 
-            # Fast poll: check every 0.5s, bail after 2s if no ad detected
-            for i in range(4):
-                await asyncio.sleep(0.5)
-                if any('SUCCEEDED' in e for e in events):
-                    successes += 1
-                    print(f' OK ({successes}/10)')
-                    break
-                if any('FAILED' in e for e in events):
-                    print(' FAIL')
-                    page.remove_listener('console', on_console)
-                    await browser.close()
-                    print('\nABORTED after CDP failure')
-                    return
+            # Phase 1: wait up to AD_DETECT_TIMEOUT for an ad to appear
+            ad_seen = await wait_for_ad_or_timeout(page, AD_DETECT_TIMEOUT)
 
-            if not any('SUCCEEDED' in e for e in events):
-                ad_flag = 'ad' if any('Ad #' in e for e in events) else 'no ad'
+            if not ad_seen:
+                print(' → next (no ad)')
+                page.remove_listener('console', on_console)
+                continue
+
+            # Phase 2: ad detected — wait for skip pipeline
+            print(f' 📺 ad', end='', flush=True)
+            result = await wait_for_skip_result(events, SKIP_WAIT_TIMEOUT)
+
+            if result == 'success':
+                successes += 1
+                print(f' ✅ SKIPPED ({successes}/10)')
+            elif result == 'fail':
+                print(' ❌ CDP FAILED')
+                page.remove_listener('console', on_console)
+                await browser.close()
+                print('\nABORTED after CDP failure')
+                return
+            else:
                 poll_count = sum(1 for e in events if 'polling' in e)
-                extra = f', polled {poll_count}x' if poll_count else ''
-                print(f' skip ({ad_flag}{extra})')
+                print(f' ⏱ timeout (polled {poll_count}x)')
 
             page.remove_listener('console', on_console)
 
