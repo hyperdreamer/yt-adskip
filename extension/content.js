@@ -123,16 +123,18 @@
           { type: 'adskip:click', x: btn.x, y: btn.y },
           (resp) => {
             if (chrome.runtime.lastError) {
-              WARN('CDP sendMessage error:', chrome.runtime.lastError.message);
-              resolve(false);
+              resolve({ ok: false, reason: 'sendMessage: ' + chrome.runtime.lastError.message });
+            } else if (!resp) {
+              resolve({ ok: false, reason: 'no response from background' });
+            } else if (!resp.ok) {
+              resolve({ ok: false, reason: 'bg error: ' + (resp.error || 'unknown') });
             } else {
-              resolve(resp && resp.ok === true);
+              resolve({ ok: true });
             }
           }
         );
       } catch (e) {
-        WARN('CDP sendMessage exception:', e.message);
-        resolve(false);
+        resolve({ ok: false, reason: 'exception: ' + e.message });
       }
     });
   }
@@ -181,13 +183,15 @@
       cdpAttempted = true;
       LOG('🖱 Skip button found at (' + btn.x + ', ' + btn.y + '), dispatching CDP click');
       updateOverlay('🖱 CDP click');
-      tryCdpClick(btn).then((ok) => {
-        if (ok) {
+      tryCdpClick(btn).then((result) => {
+        if (result.ok) {
           LOG('✅ CDP click SUCCEEDED');
           updateOverlay('✅ skipped');
         } else {
-          WARN('❌ CDP click FAILED');
-          updateOverlay('❌ CDP failed');
+          WARN('❌ CDP click FAILED:', result.reason);
+          updateOverlay('❌ CDP failed: ' + result.reason);
+          // Retry on next poll — reset flag so we try again
+          cdpAttempted = false;
         }
       });
     } else {

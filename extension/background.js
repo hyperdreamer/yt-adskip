@@ -13,6 +13,8 @@
 
 const LOG = console.log.bind(console, '[YT AdSkip BG]');
 
+LOG('service worker started');
+
 // ── CDP mouse click ──────────────────────────────────────────────────
 
 async function cdpClick(tabId, x, y) {
