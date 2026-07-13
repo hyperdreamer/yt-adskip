@@ -58,30 +58,46 @@ async def main():
             page.on('console', on_console)
 
             url = f'https://www.youtube.com/watch?v={vid}'
-            print(f'▶ {vid}: {url}')
+            print(f'\n▶ {vid}: {url}')
             await page.goto(url, wait_until='domcontentloaded', timeout=15000)
-            await asyncio.sleep(2)
 
-            # Wait for video element, then click to play only if paused
+            # Only click to play if video is actually paused
             try:
+                await asyncio.sleep(2)  # let page + ads settle
                 v = page.locator('#movie_player video').first
-                await v.wait_for(state='visible', timeout=10000)
-                await asyncio.sleep(1.5)  # let page settle
-
                 paused = await v.evaluate('el => el.paused')
+                
                 if paused:
-                    box = await v.bounding_box()
+                    # Click the YouTube large play button (center of player)
+                    # — clicking the video element directly doesn't work
+                    play_btn = page.locator('.ytp-large-play-button').first
+                    try:
+                        box = await play_btn.bounding_box(timeout=3000)
+                    except:
+                        box = None
+                    
                     if box:
                         cx = box['x'] + box['width'] / 2
                         cy = box['y'] + box['height'] / 2
                         await cdp_click(cdp, cx, cy)
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(1.5)
                         now_paused = await v.evaluate('el => el.paused')
-                        print(f'  ▶ CDP click play (paused → {now_paused})')
+                        current = await v.evaluate('el => el.currentTime.toFixed(1)')
+                        print(f'  ▶ clicked .ytp-large-play-button (paused={paused} → {now_paused}, t={current}s)')
                     else:
-                        print('  ⚠️ no bounding box')
+                        # Fallback: click center of video
+                        box = await v.bounding_box()
+                        if box:
+                            cx = box['x'] + box['width'] / 2
+                            cy = box['y'] + box['height'] / 2
+                            await cdp_click(cdp, cx, cy)
+                            await asyncio.sleep(1.5)
+                            now_paused = await v.evaluate('el => el.paused')
+                            current = await v.evaluate('el => el.currentTime.toFixed(1)')
+                            print(f'  ▶ clicked video center (paused={paused} → {now_paused}, t={current}s)')
                 else:
-                    print(f'  ▶ already playing (autoplay)')
+                    current = await v.evaluate('el => el.currentTime.toFixed(1)')
+                    print(f'  ▶ already playing (t={current}s, autoplay)')
             except Exception as e:
                 print(f'  ⚠️ video error: {e}')
 
@@ -95,9 +111,16 @@ async def main():
                 print(f'  🎉 CDP SKIP WORKS!\n')
                 break
             elif any('FAILED' in e for e in events):
-                print(f'  ❌ CDP FAILED\n')
+                print(f'  ❌ CDP FAILED')
+            elif any('📺 Ad' in e for e in events):
+                print(f'  📺 ad detected but no skip (bumper?)')
             else:
-                print(f'  ⏭  no ad\n')
+                print(f'  ⏭  no ad')
+            
+            # Show all extension events for diagnostics
+            for e in events:
+                print(f'    {e}')
+            print()
 
             page.remove_listener('console', on_console)
 
