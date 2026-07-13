@@ -81,7 +81,7 @@ async def main():
 
             # Quick play click if paused
             try:
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(0.8)
                 v = page.locator('#movie_player video').first
                 paused = await v.evaluate('el => el.paused')
                 if paused:
@@ -95,9 +95,9 @@ async def main():
             except:
                 pass
 
-            # Fast poll: 1.5s intervals, bail after ~9s
-            for _ in range(6):
-                await asyncio.sleep(1.5)
+            # Fast poll: check every 0.5s, bail after 2s if no ad detected
+            for i in range(4):
+                await asyncio.sleep(0.5)
                 if any('SUCCEEDED' in e for e in events):
                     successes += 1
                     print(f' OK ({successes}/10)')
