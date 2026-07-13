@@ -62,16 +62,28 @@ async def main():
             await page.goto(url, wait_until='domcontentloaded', timeout=15000)
             await asyncio.sleep(2)
 
-            # CDP click on video to trigger pre-roll ad
+            # Wait for video element, then click to play only if paused
             try:
-                box = await page.locator('#movie_player video').first.bounding_box()
-                if box:
-                    cx = box['x'] + box['width'] / 2
-                    cy = box['y'] + box['height'] / 2
-                    await cdp_click(cdp, cx, cy)
-                    print('  ▶ CDP click play')
+                v = page.locator('#movie_player video').first
+                await v.wait_for(state='visible', timeout=10000)
+                await asyncio.sleep(1.5)  # let page settle
+
+                paused = await v.evaluate('el => el.paused')
+                if paused:
+                    box = await v.bounding_box()
+                    if box:
+                        cx = box['x'] + box['width'] / 2
+                        cy = box['y'] + box['height'] / 2
+                        await cdp_click(cdp, cx, cy)
+                        await asyncio.sleep(1)
+                        now_paused = await v.evaluate('el => el.paused')
+                        print(f'  ▶ CDP click play (paused → {now_paused})')
+                    else:
+                        print('  ⚠️ no bounding box')
+                else:
+                    print(f'  ▶ already playing (autoplay)')
             except Exception as e:
-                print(f'  ⚠️ play click error: {e}')
+                print(f'  ⚠️ video error: {e}')
 
             for _ in range(10):
                 await asyncio.sleep(3)
