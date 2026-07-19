@@ -56,9 +56,12 @@ yt-adskip/
 {
   "manifest_version": 3,
   "name": "YT AdSkip",
-  "version": "1.0.0",
-  "description": "Automatically skips YouTube ads via CDP clicks.",
-  "permissions": ["storage", "debugger"],
+  "version": "2.0.6",
+  "minimum_chrome_version": "96",
+  "author": "hyperdreamer",
+  "homepage_url": "https://github.com/hyperdreamer/yt-adskip",
+  "description": "Automatically clicks YouTube's Skip Ad button via CDP.",
+  "permissions": ["storage", "debugger", "management"],
   "background": { "service_worker": "background.js" },
   "host_permissions": ["*://www.youtube.com/*"],
   "content_scripts": [{
@@ -76,7 +79,7 @@ yt-adskip/
 ```
 
 Key decisions:
-- **`permissions: ["storage", "debugger"]`** — storage for toggle/state, debugger for CDP mouse events.
+- **`permissions: ["storage", "debugger", "management"]`** — storage for toggle/state, debugger for CDP mouse events, management for listing conflicting extensions.
 - **`background.service_worker`** — handles CDP attach/detach and `Input.dispatchMouseEvent`.
 - **`host_permissions`** — scoped to `www.youtube.com` only.
 - **`run_at: "document_idle"`** — ensures `#movie_player` and `<video>` are present.
@@ -141,20 +144,24 @@ can be removed before re-attaching on SPA navigation — prevents memory leaks.
 Retries are capped at 40 attempts (~20 s) in case `#movie_player` never loads.
 
 ### 4.2 Main Loop — Polling at 250 ms
-
 ```js
 const POLL_INTERVAL_MS = 250;
-const PLAYBACK_SPEED = 16;
 const MIN_AD_BEFORE_SKIP_MS = 1000; // brief grace period before acting
+let cdpAttempted = false;
 
 function trySkipAd() {
   if (!enabled) return;
-  if (!isAdPlaying()) { adStartTime = 0; return; }
-  if (!adStartTime) { adStartTime = Date.now(); bumpStats(); return; }
+  if (!isAdPlaying()) { adStartTime = 0; cdpAttempted = false; return; }
+  if (!adStartTime) { adStartTime = Date.now(); return; }
   if (Date.now() - adStartTime < MIN_AD_BEFORE_SKIP_MS) return;
-
-  tryClickSkipButton(); // best-effort, usually rejected
-  skipAd();
+  if (cdpAttempted) return;
+  const btn = findSkipButton();
+  if (!btn) return;
+  cdpAttempted = true;
+  tryCdpClick(btn).then((result) => {
+    if (result.ok) bumpStats();
+    else cdpAttempted = false;
+  });
 }
 ```
 
@@ -209,7 +216,7 @@ On content script load (`document_idle`):
 
 1. Call `startAll()` immediately — start polling and hook player events.
 2. Asynchronously read `chrome.storage.local` for enabled/disabled state and debug overlay toggle.
-3. If disabled, call `disable()` (clears ad state, restores playback).
+3. If disabled, call `disable()` (clears ad state and stops polling).
 4. Register a single `chrome.storage.onChanged` listener that handles both `enabled` and `debugOverlay` keys.
 5. Register a `beforeunload` listener that flushes any pending stats immediately (prevents losing skip counts on SPA navigations).
 
@@ -242,8 +249,8 @@ before the stored state is read.
 
 - **Popup → Content Script**: Popup writes `{ enabled: true/false }` or `{ debugOverlay: true/false }` to storage.
   Content script listens via a single `chrome.storage.onChanged` handler that dispatches to `enable()`/`disable()` or `setDebugOverlay()`.
-- **Content Script → Popup**: Content script writes updated `stats` after each ad
-  detection. Popup reads on open and listens via `onChanged`. Stats are debounced at 500 ms and flushed immediately on `beforeunload` to avoid data loss.
+- **Content Script → Popup**: Content script writes updated `stats` after each successful CDP click.
+  Popup reads on open and listens via `onChanged`. Stats are debounced at 500 ms and flushed immediately on `beforeunload` to avoid data loss.
 
 ### Disable Behavior
 

@@ -57,7 +57,7 @@ clicks are ignored. The extension uses CDP to generate real mouse events:
 A 250 ms polling loop and `yt-navigate-finish` event listener keep detection
 working across SPA navigations.
 
-After each ad detection, the script increments a counter in
+After each successful CDP click, the script increments a counter in
 `chrome.storage.local` that the popup reads for the stats display.
 
 ## Files

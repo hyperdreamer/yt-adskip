@@ -106,11 +106,11 @@
         const r = btn.getBoundingClientRect();
         // Must be on-screen (reject off-screen elements like Skip navigation)
         if (r.width <= 0 || r.height <= 0) continue;
-        if (r.y < 0 || r.y > window.innerHeight) continue;
-        return {
-          x: Math.round(r.left + r.width / 2),
-          y: Math.round(r.top + r.height / 2),
-        };
+        const cx = Math.round(r.left + r.width / 2);
+        const cy = Math.round(r.top + r.height / 2);
+        if (cx < 0 || cx > window.innerWidth) continue;
+        if (cy < 0 || cy > window.innerHeight) continue;
+        return { x: cx, y: cy };
       } catch (_) {}
     }
     return null;
@@ -250,6 +250,7 @@
     if (toAdd === 0) return;
     try {
       chrome.storage.local.get(['stats', 'today'], function (data) {
+        if (chrome.runtime.lastError) { WARN('flushStats get failed', chrome.runtime.lastError); return; }
         const prevS = (data && data.stats) || { totalSkips: 0, lastSkipTime: null };
         const stats = {
           totalSkips: (prevS.totalSkips || 0) + toAdd,
@@ -261,7 +262,9 @@
           date: todayKey,
           count: (prevT.date === todayKey ? prevT.count : 0) + toAdd
         };
-        chrome.storage.local.set({ stats: stats, today: today });
+        chrome.storage.local.set({ stats: stats, today: today }, function () {
+          if (chrome.runtime.lastError) { WARN('flushStats set failed', chrome.runtime.lastError); }
+        });
       });
     } catch (e) { WARN('flushStats error', e); }
   }

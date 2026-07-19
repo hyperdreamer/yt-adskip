@@ -12,7 +12,7 @@ Does NOT block ads, does NOT manipulate video playback.
 
 ### Components
 1. **manifest.json** — MV3 extension manifest
-   - Permissions: storage, debugger
+   - Permissions: storage, debugger, management
    - Background service worker for CDP click dispatch
    - Content script injected into `*://www.youtube.com/*`
    - Run at `document_idle`
