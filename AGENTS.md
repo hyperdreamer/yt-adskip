@@ -185,11 +185,21 @@ A `cdpAttempted` flag ensures only one click per ad — no spamming.
 
 ```js
 async function cdpClick(tabId, x, y) {
-  await attachDebugger(tabId);           // chrome.debugger.attach
-  await dispatchMouse(tabId, 'mouseMoved', x, y);
-  await dispatchMouse(tabId, 'mousePressed', x, y);
-  await dispatchMouse(tabId, 'mouseReleased', x, y);
-  await detachDebugger(tabId);           // chrome.debugger.detach
+  const targetId = await findYouTubeTarget(tabId);
+  if (!targetId) return { ok: false, error: 'no page target' };
+  try {
+    await attachDebugger({ targetId });
+  } catch (e) {
+    return { ok: false, error: 'attach failed: ' + e.message };
+  }
+  try {
+    await dispatchMouse(targetId, 'mouseMoved', x, y);
+    await dispatchMouse(targetId, 'mousePressed', x, y);
+    await dispatchMouse(targetId, 'mouseReleased', x, y);
+    return { ok: true };
+  } finally {
+    await detachDebugger(targetId).catch(() => {});
+  }
 }
 ```
 

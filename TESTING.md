@@ -31,15 +31,16 @@ Successful run looks like:
 
 ```
 Extension: .../yt-adskip/extension
-Profile:   .../yt-adskip/tests/profiles/pw-test
+Profile:   .../yt-adskip/tests/profiles/pw-fresh
+Target: 10 successful CDP skips
 
-▶ dQw4w9WgXcQ: https://www.youtube.com/watch?v=...
-  ▶ CDP click play
-  [YT AdSkip] 📺 Ad #1 detected
-  [YT AdSkip] 📺 Ad #2 detected
-  [YT AdSkip] 🖱 Skip button found at (825, 471), dispatching CDP click
-  [YT AdSkip] ✅ CDP click SUCCEEDED
-  🎉 CDP SKIP WORKS!
+[1] dQw4w9WgXcQ 📺 ad ✅ SKIPPED (1/10)
+[2] 9bZkp7q19f0 📺 ad ✅ SKIPPED (2/10)
+[3] RgKAFK5djSk → next (no ad)
+...
+[7] fRh_vgS2dFE 📺 ad ✅ SKIPPED (10/10)
+
+DONE: 10/10 skips across 7 videos
 ```
 
 ## What the test verifies

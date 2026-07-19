@@ -108,8 +108,8 @@
         if (r.width <= 0 || r.height <= 0) continue;
         const cx = Math.round(r.left + r.width / 2);
         const cy = Math.round(r.top + r.height / 2);
-        if (cx < 0 || cx > window.innerWidth) continue;
-        if (cy < 0 || cy > window.innerHeight) continue;
+        if (cx < 0 || cx >= window.innerWidth) continue;
+        if (cy < 0 || cy >= window.innerHeight) continue;
         return { x: cx, y: cy };
       } catch (_) {}
     }
