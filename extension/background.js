@@ -63,6 +63,10 @@ async function cdpClick(tabId, x, y) {
 function findYouTubeTarget(tabId) {
   return new Promise((resolve) => {
     chrome.debugger.getTargets((targets) => {
+      if (chrome.runtime.lastError || !Array.isArray(targets)) {
+        resolve(null);
+        return;
+      }
       for (const t of targets) {
         if (t.tabId === tabId && t.type === 'page' && t.url.includes('youtube.com/watch')) {
           resolve(t.id);
