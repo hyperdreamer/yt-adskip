@@ -56,7 +56,7 @@ yt-adskip/
 {
   "manifest_version": 3,
   "name": "YT AdSkip",
-  "version": "0.0.0",
+  "version": "2.0.7",
   "minimum_chrome_version": "96",
   "author": "hyperdreamer",
   "homepage_url": "https://github.com/hyperdreamer/yt-adskip",
