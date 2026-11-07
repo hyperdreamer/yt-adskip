@@ -13,3 +13,6 @@ __pycache__/
 
 # Test profiles (Playwright persistent browser data)
 tests/profiles/
+
+# CodeGraph local index
+.codegraph/
