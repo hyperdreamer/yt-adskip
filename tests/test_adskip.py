@@ -20,18 +20,6 @@ AD_DETECT_TIMEOUT = 2
 SKIP_WAIT_TIMEOUT = 30
 
 
-async def cdp_click(cdp, x, y):
-    """Real mouse click via CDP - isTrusted: true."""
-    await cdp.send('Input.dispatchMouseEvent', {
-        'type': 'mouseMoved', 'x': x, 'y': y, 'button': 'none', 'buttons': 0})
-    await asyncio.sleep(0.05)
-    await cdp.send('Input.dispatchMouseEvent', {
-        'type': 'mousePressed', 'x': x, 'y': y, 'button': 'left', 'buttons': 1, 'clickCount': 1})
-    await asyncio.sleep(0.03)
-    await cdp.send('Input.dispatchMouseEvent', {
-        'type': 'mouseReleased', 'x': x, 'y': y, 'button': 'left', 'buttons': 0, 'clickCount': 1})
-
-
 async def wait_for_service_worker(context, timeout=10):
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
@@ -79,6 +67,63 @@ async def read_storage(worker):
     })''')
 
 
+async def run_popup_status(context, worker):
+    popup = await context.new_page()
+    baseline = await read_storage(worker)
+    extension_root = worker.url.rsplit('/', 1)[0]
+    await popup.goto(extension_root + '/popup/popup.html', wait_until='domcontentloaded')
+
+    async def set_state(enabled, cdp, expected_word):
+        await popup.evaluate('''async ({enabled, cdp}) => new Promise(resolve => {
+            chrome.storage.local.set({enabled, cdp}, resolve);
+        })''', {'enabled': enabled, 'cdp': cdp})
+        await popup.wait_for_function(
+            "expected => document.querySelector('#status-word')?.textContent === expected",
+            expected_word,
+            timeout=5000,
+        )
+
+    off = {'state': 'off', 'reason': None, 'at': int(time.time() * 1000)}
+    blocked_reason = 'Debugger unavailable — close DevTools or disable other extensions, then try again'
+    blocked = {'state': 'blocked', 'reason': blocked_reason, 'at': int(time.time() * 1000)}
+
+    await set_state(True, off, 'Active')
+    assert 'active' in (await popup.locator('#status').get_attribute('class'))
+    await set_state(True, blocked, 'Limited')
+    assert 'limited' in (await popup.locator('#status').get_attribute('class'))
+    assert await popup.locator('#status-reason').inner_text() == blocked_reason
+    await set_state(False, blocked, 'Paused')
+    assert 'paused' in (await popup.locator('#status').get_attribute('class'))
+    assert await popup.locator('#status-reason').is_hidden()
+
+    await popup.evaluate('''() => {
+        globalThis.__adskipStatusTransitions = [];
+        const word = document.querySelector('#status-word');
+        const observer = new MutationObserver(records => {
+            for (const record of records) {
+                for (const node of record.addedNodes || []) {
+                    globalThis.__adskipStatusTransitions.push(node.textContent);
+                }
+            }
+        });
+        observer.observe(word, {childList: true});
+    }''')
+    await popup.locator("label[for='enabled']").click()
+    await popup.wait_for_function(
+        "() => document.querySelector('#status-word')?.textContent === 'Limited'",
+        timeout=5000,
+    )
+    assert 'limited' in (await popup.locator('#status').get_attribute('class'))
+    assert 'Active' not in await popup.evaluate('() => globalThis.__adskipStatusTransitions')
+    await popup.evaluate('''async (state) => new Promise(resolve => {
+        chrome.storage.local.set(state, resolve);
+    })''', {
+        'enabled': baseline.get('enabled', True),
+        'cdp': baseline.get('cdp', off),
+    })
+    await popup.close()
+
+
 async def wait_for_ad(page, timeout):
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
@@ -94,25 +139,28 @@ async def wait_for_ad(page, timeout):
     return False
 
 
-async def wait_for_cdp_order(worker, page_console_events, timeout):
+async def wait_for_cdp_order(worker, click_events, timeout):
     deadline = asyncio.get_running_loop().time() + timeout
+    attach_at = None
+    click_at = None
     while asyncio.get_running_loop().time() < deadline:
-        events = await worker.evaluate('''() => globalThis.__adskipConsoleEvents || []''')
-        combined = events + [
-            {'at': at, 'text': text} for at, text in page_console_events
-        ]
-        combined.sort(key=lambda event: event['at'])
-        lowered = [event['text'].lower() for event in combined]
-        attach = next((i for i, event in enumerate(lowered) if 'attach' in event and 'detach' not in event), None)
-        click = next((i for i, event in enumerate(lowered) if 'click' in event), None)
-        detach = next((i for i, event in enumerate(lowered) if 'detach' in event), None)
-        if attach is not None and click is not None and detach is not None and attach < click < detach:
-            return combined
+        storage = await read_storage(worker)
+        cdp = storage.get('cdp') or {}
+        now_ms = time.time() * 1000
+        if attach_at is None and cdp.get('state') == 'attached':
+            attach_at = cdp.get('at', now_ms)
+        if click_at is None and click_events:
+            click_at = click_events[0]
+        if attach_at is not None and click_at is not None and cdp.get('state') == 'off':
+            detach_at = cdp.get('at', now_ms)
+            if attach_at < click_at < detach_at:
+                return {'attach': attach_at, 'click': click_at, 'detach': detach_at}
         await asyncio.sleep(0.1)
     return None
 
 
 async def run_deterministic(context, worker):
+    await run_popup_status(context, worker)
     page = await context.new_page()
     await page.goto('https://www.youtube.com/watch?v=' + VIDEOS[0],
                     wait_until='domcontentloaded', timeout=30000)
@@ -139,14 +187,12 @@ async def run_deterministic(context, worker):
 
 
 async def run_best_effort(page, context, worker):
-    cdp = await context.new_cdp_session(page)
-    page_console_events = []
-    page.on('console', lambda message: page_console_events.append((time.time() * 1000, message.text))
-            if 'adskip' in message.text.lower() else None)
+    click_events = []
+    page.on('console', lambda message: click_events.append(time.time() * 1000)
+            if 'CDP click SUCCEEDED' in message.text else None)
     for video_id in VIDEOS:
         try:
-            page_console_events.clear()
-            await worker.evaluate('''() => { globalThis.__adskipConsoleEvents.length = 0; }''')
+            click_events.clear()
             await page.goto('https://www.youtube.com/watch?v=' + video_id,
                             wait_until='domcontentloaded', timeout=15000)
         except Exception:
@@ -158,20 +204,18 @@ async def run_best_effort(page, context, worker):
             if await video.evaluate('element => element.paused'):
                 box = await page.locator('.ytp-large-play-button').first.bounding_box(timeout=2000)
                 if box:
-                    await cdp_click(cdp, box['x'] + box['width'] / 2,
-                                    box['y'] + box['height'] / 2)
+                    await page.mouse.click(box['x'] + box['width'] / 2,
+                                           box['y'] + box['height'] / 2)
         except Exception:
             pass
 
         if not await wait_for_ad(page, AD_DETECT_TIMEOUT):
             continue
 
-        events = await wait_for_cdp_order(worker, page_console_events, SKIP_WAIT_TIMEOUT)
-        assert events is not None, 'real ad appeared but attach, click, detach were not logged in order'
-        await cdp.detach()
+        events = await wait_for_cdp_order(worker, click_events, SKIP_WAIT_TIMEOUT)
+        assert events is not None, 'real ad appeared but attach, click success, and verified release were not observed in order'
         return
 
-    await cdp.detach()
     print('SKIP: no ad served')
 
 

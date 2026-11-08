@@ -23,6 +23,7 @@ function makeChrome({
   sendMessageError = null,
   queryError = null,
   initiallyAttached = false,
+  onCommand = null,
 } = {}) {
   const target = {
     type: "page",
@@ -105,6 +106,7 @@ function makeChrome({
       },
       sendCommand(_debuggee, method, params, callback) {
         state.commands.push({ method, params });
+        if (onCommand) onCommand({ method, params, state });
         invokeCallback(callback, null, {});
       },
     },
@@ -189,6 +191,20 @@ test("adskip:click returns true synchronously and responds asynchronously", asyn
     "mousePressed",
     "mouseReleased",
   ]);
+});
+
+test("adapter stops dispatching when abort changes after mouseMoved", async () => {
+  let shouldAbort = false;
+  const { worker, state } = await loadWorker({
+    onCommand({ params }) {
+      if (params.type === "mouseMoved") shouldAbort = true;
+    },
+  });
+
+  const result = await worker.adapter.dispatchClick(7, 30, 40, () => shouldAbort);
+
+  assert.deepEqual(result, { ok: false, message: "disabled" });
+  assert.deepEqual(state.commands.map(({ params }) => params.type), ["mouseMoved"]);
 });
 
 test("only loading tab updates call documentBoundary", async () => {

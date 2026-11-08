@@ -51,6 +51,7 @@ export function createCdpSession({ adapter, timers, publish, now, graceMs = DETA
       blockedAt: null,
       timer: null,
       expectDetach: false,
+      releaseUnverified: false,
       queue: [],
       running: false,
     };
@@ -141,6 +142,7 @@ export function createCdpSession({ adapter, timers, publish, now, graceMs = DETA
     if (!isCurrent(record)) return { ok: false, reason: "tab removed" };
     if (result?.ok) {
       record.expectDetach = false;
+      record.releaseUnverified = false;
       setState(record, "attached", null, silent);
       return { ok: true };
     }
@@ -160,15 +162,19 @@ export function createCdpSession({ adapter, timers, publish, now, graceMs = DETA
     try {
       pageTarget = await adapter.listPageTarget(record.tabId);
     } catch {
+      if (isCurrent(record)) record.releaseUnverified = true;
       return;
     }
     if (!isCurrent(record)) return;
+    record.releaseUnverified = false;
     if (pageTarget === null) {
       forget(record, silent);
     } else if (pageTarget?.attached === false) {
       setState(record, "off", null, silent);
     } else if (pageTarget?.attached === true) {
       setState(record, "blocked", REASON_OWNER_UNKNOWN, silent);
+    } else {
+      record.releaseUnverified = true;
     }
   }
 
@@ -177,7 +183,7 @@ export function createCdpSession({ adapter, timers, publish, now, graceMs = DETA
     record.inAd = false;
     record.attempted = false;
     clearTimer(record);
-    if (record.state === "off") {
+    if (record.state === "off" && !record.releaseUnverified) {
       setState(record, "off");
       return;
     }
@@ -189,10 +195,12 @@ export function createCdpSession({ adapter, timers, publish, now, graceMs = DETA
     }
     if (!isCurrent(record)) return;
     if (pageTarget === null) {
+      record.releaseUnverified = false;
       forget(record);
       return;
     }
     if (pageTarget?.attached === false) {
+      record.releaseUnverified = false;
       setState(record, "off");
       return;
     }
@@ -294,7 +302,7 @@ export function createCdpSession({ adapter, timers, publish, now, graceMs = DETA
     if (!isCurrent(record)) return;
     record.attempted = false;
     clearTimer(record);
-    if (record.state === "off") {
+    if (record.state === "off" && !record.releaseUnverified) {
       writeAggregate(false, silent);
       return;
     }
@@ -313,11 +321,17 @@ export function createCdpSession({ adapter, timers, publish, now, graceMs = DETA
       enabled = true;
       return;
     }
-    if (!enabled) return;
-    enabled = false;
-    disableEpoch += 1;
+    const transitioned = enabled;
+    if (transitioned) {
+      enabled = false;
+      disableEpoch += 1;
+    }
+    const recordsToDisable = [...records.values()].filter((record) =>
+      transitioned || (record.state === "off" && record.releaseUnverified),
+    );
+    if (recordsToDisable.length === 0) return;
     const silent = options.silent === true;
-    const work = [...records.values()].map((record) => enqueue(
+    const work = recordsToDisable.map((record) => enqueue(
       record,
       () => disableRecord(record, silent),
       undefined,
@@ -352,6 +366,7 @@ export function createCdpSession({ adapter, timers, publish, now, graceMs = DETA
     return enqueue(record, () => {
       if (record.expectDetach) {
         record.expectDetach = false;
+        record.releaseUnverified = false;
         record.attempted = false;
         clearTimer(record);
         setState(record, "off");

@@ -111,6 +111,7 @@ function harness(options = {}) {
   });
   return {
     session,
+    adapter,
     calls,
     publications,
     targets,
@@ -364,6 +365,48 @@ test("T1.17 expected onDetach after grace release remains off", async () => {
   await h.session.handleDetach(TAB);
   assert.equal(h.session.status(TAB).state, "off");
   assert.equal(h.session.status(TAB).reason, null);
+});
+
+test("document boundary retries release after an unverified off record", async () => {
+  const h = harness();
+  h.seedTarget(TAB, true);
+  const listPageTarget = h.adapter.listPageTarget;
+  let pageReads = 0;
+  h.adapter.listPageTarget = async (tabId) => {
+    pageReads += 1;
+    if (pageReads === 1) throw new Error("target read failed");
+    return listPageTarget(tabId);
+  };
+  h.detachPlans.push(async () => ({ released: true, attachedAfter: true }));
+
+  await h.session.reconcile();
+  assert.equal(h.session.status(TAB).state, "off");
+  assert.equal(h.targets.get(TAB).attached, true);
+
+  await h.session.documentBoundary(TAB);
+  assert.equal(h.targets.get(TAB).attached, false);
+  assert.equal(countCalls(h, "detach", TAB), 2);
+  assert.equal(pageReads, 3);
+});
+
+test("disable retries release after an unverified off record", async () => {
+  const h = harness();
+  h.seedTarget(TAB, true);
+  const listPageTarget = h.adapter.listPageTarget;
+  let pageReads = 0;
+  h.adapter.listPageTarget = async (tabId) => {
+    pageReads += 1;
+    if (pageReads === 1) throw new Error("target read failed");
+    return listPageTarget(tabId);
+  };
+  h.detachPlans.push(async () => ({ released: true, attachedAfter: true }));
+
+  await h.session.reconcile();
+  await h.session.setEnabled(false);
+
+  assert.equal(h.targets.get(TAB).attached, false);
+  assert.equal(countCalls(h, "detach", TAB), 2);
+  assert.equal(pageReads, 2);
 });
 
 test("T1.18 reconcile releases a pre-existing attachment without probing", async () => {

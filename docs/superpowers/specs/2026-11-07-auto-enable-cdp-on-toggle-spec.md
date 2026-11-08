@@ -347,8 +347,9 @@ Design §3 N3 excludes "a unit-test framework for the extension as a whole", and
 explicitly requires T2. Read together, N3 forbids building a general harness or mocking
 chrome APIs broadly; it does not forbid the two named test files for the two new **pure**
 modules, which need no chrome mock at all. T1 and T2 are therefore in scope, and no other
-unit test is added. This is a reading of the approved design, not a change to it (spec
-review 1, finding 6).
+unit test was added under the original scope. This is a reading of the approved design, not a change to it (spec
+review 1, finding 6). A third pure-module test file, `tests/unit_background_adapter.mjs`,
+was added under a PM amendment dated 2026-11-08.
 
 ## 11. PM rulings on the drafter's open questions
 

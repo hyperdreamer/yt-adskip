@@ -7,6 +7,8 @@ import { deriveStatus } from "../status.js";
  * Uses onChanged listener for instant updates instead of polling.
  */
 
+let currentCdp = { state: "off", reason: null, at: 0 };
+
 (function () {
   'use strict';
 
@@ -46,8 +48,7 @@ import { deriveStatus } from "../status.js";
   }
 
   function renderStatus(enabledFlag, cdp) {
-    const v = deriveStatus({ enabled: !!enabledFlag,
-                              cdp: cdp || { state: "off", reason: null, at: 0 } });
+    const v = deriveStatus({ enabled: !!enabledFlag, cdp: cdp || currentCdp });
     statusEl.classList.remove("active", "paused", "limited");
     statusEl.classList.add(v.state);
     wordEl.textContent = v.word;
@@ -55,10 +56,10 @@ import { deriveStatus } from "../status.js";
     else { reasonEl.textContent = ""; reasonEl.hidden = true; }
   }
 
-  function applyEnabledState(flag, cdp) {
+  function applyEnabledState(flag) {
     toggleEl.checked = !!flag;
     labelEl.textContent = flag ? 'Enabled' : 'Disabled';
-    renderStatus(flag, cdp);
+    renderStatus(flag, currentCdp);
   }
 
   function renderStats(stats, today) {
@@ -74,7 +75,8 @@ import { deriveStatus } from "../status.js";
         console.error('YT AdSkip: storage read failed', lastError);
         return;
       }
-      applyEnabledState(data && data.enabled !== false, data && data.cdp);
+      currentCdp = data && data.cdp ? data.cdp : { state: "off", reason: null, at: 0 };
+      applyEnabledState(data && data.enabled !== false);
       debugEl.checked = !!(data && data.debugOverlay);
       renderStats(data && data.stats, data && data.today);
     });
@@ -101,6 +103,7 @@ import { deriveStatus } from "../status.js";
   // Listen for storage changes from content script (instant updates).
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+    if (changes.cdp) currentCdp = changes.cdp.newValue || { state: "off", reason: null, at: 0 };
     if (changes.enabled || changes.cdp || changes.stats || changes.today) readState();
   });
 

@@ -44,6 +44,16 @@ test("enabled with cdp attached is Active", () => {
   });
 });
 
+test("blocked cdp stays Limited when enabling after Paused", () => {
+  const blocked = cdp("blocked", blockedReason);
+  assert.equal(deriveStatus({ enabled: false, cdp: blocked }).word, "Paused");
+  assert.deepEqual(deriveStatus({ enabled: true, cdp: blocked }), {
+    state: "limited",
+    word: "Limited",
+    reason: blockedReason,
+  });
+});
+
 test("enabled with cdp blocked is Limited and copies its reason verbatim", () => {
   const result = deriveStatus({
     enabled: true,

@@ -62,7 +62,7 @@ yt-adskip/
   "homepage_url": "https://github.com/hyperdreamer/yt-adskip",
   "description": "Automatically clicks YouTube's Skip Ad button via CDP.",
   "permissions": ["storage", "debugger", "management"],
-  "background": { "service_worker": "background.js" },
+  "background": { "service_worker": "background.js", "type": "module" },
   "host_permissions": ["*://www.youtube.com/*"],
   "content_scripts": [{
     "matches": ["*://www.youtube.com/*"],
