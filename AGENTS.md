@@ -13,13 +13,13 @@ YouTube's skip button handler **requires `isTrusted: true` click events**.
 DOM-synthesized events are rejected. Video-speed manipulation (playbackRate +
 seek) is detectable as abnormal playback behavior and triggers anti-adblock.
 
-**Solution**: CDP (Chrome DevTools Protocol) `Input.dispatchMouseEvent` via
-`chrome.debugger`. These are genuine browser-level mouse events with
-`isTrusted: true` — YouTube accepts them as real user clicks.
-
-The content script finds the skip button, sends viewport coordinates to the
-background service worker, which attaches CDP, dispatches mouseMoved →
-mousePressed → mouseReleased, then detaches.
+**Solution**: CDP (`Input.dispatchMouseEvent`) via `chrome.debugger` supplies
+trusted mouse events. While enabled, an ad-state report opens a debugger
+session for that tab. The session remains open through the ad pod and is
+released after the ad ends, with a 1.5 s grace window to absorb pod rollover.
+A skip click normally dispatches on this already-open session; the click does
+not detach it. The current background also attempts attachment as a fallback
+if a click arrives while the tab has no attached or draining session.
 
 ---
 
@@ -174,51 +174,53 @@ When the skip button is visible (after 1s grace period):
 
 1. `findSkipButton()` locates `.ytp-ad-skip-button-modern` / `.ytp-ad-skip-button` / `.ytp-skip-ad-button`
 2. Computes viewport center coordinates via `getBoundingClientRect()`
-3. Sends `{ type: "adskip:click", x, y }` to the background service worker
-4. Background attaches `chrome.debugger`, dispatches `mouseMoved` → `mousePressed` → `mouseReleased`, detaches
+3. Sends `{ type: "adskip:click", x, y }` to the background service worker with a response callback
+4. The background dispatches `mouseMoved` → `mousePressed` → `mouseReleased` on the tab's open CDP session
 5. YouTube's handler receives `isTrusted: true` and accepts the click
-6. Ad ends naturally
+6. Ad ends naturally; the session remains open until ad state ends and the grace window expires
 
+The normal ad-state edge opens the session before a click is attempted. The
+background has an attachment fallback if a click arrives when no session is
+attached or draining; click dispatch itself does not detach the session.
 A `cdpAttempted` flag ensures only one click per ad — no spamming.
 
 ### 4.4 Background Service Worker (`background.js`)
 
-```js
-async function cdpClick(tabId, x, y) {
-  const targetId = await findYouTubeTarget(tabId);
-  if (!targetId) return { ok: false, error: 'no page target' };
-  try {
-    await attachDebugger({ targetId });
-  } catch (e) {
-    return { ok: false, error: 'attach failed: ' + e.message };
-  }
-  try {
-    await dispatchMouse(targetId, 'mouseMoved', x, y);
-    await dispatchMouse(targetId, 'mousePressed', x, y);
-    await dispatchMouse(targetId, 'mouseReleased', x, y);
-    return { ok: true };
-  } finally {
-    await detachDebugger(targetId).catch(() => {});
-  }
-}
-```
+The content script sends two message types:
 
-`Input.dispatchMouseEvent` generates real OS-level mouse events at the
-specified viewport coordinates. These pass YouTube's `isTrusted` check.
+- `{ type: "adskip:adState", inAd }` on ad-state edges and every 2 s while an ad is playing.
+- `{ type: "adskip:click", x, y }` when a skip button is found; the content script supplies a callback for the result.
 
-### 4.5 SPA Navigation Handling
+After hydration, the background sends `{ type: "adskip:hello" }` once to each
+currently matching YouTube tab. The content script uses it to force an ad-state
+report. This and the recurring heartbeat restore session state after a worker
+restart.
 
-```js
-document.addEventListener('yt-navigate-finish', function () {
-  adStartTime = 0;
-  hookYouTubeEvents(); // idempotent — cleans up old handlers before re-attaching
-});
-```
+There is one FIFO queue per tab. Its public session states are `off`,
+`attached`, and `blocked`; `attaching` and `draining` are internal transition
+states. An ad-state edge while enabled attaches CDP. When the ad state ends,
+the session drains for 1.5 s before detach and target verification. A returning
+ad during that window cancels the drain. Clicks dispatch the three mouse events
+on an existing session and do not detach it; if a click arrives without an
+attached or draining session, the current click path attempts attachment as a
+fallback.
 
-YouTube never does full page reloads. `yt-navigate-finish` fires after
-every SPA transition. Reset ad state and re-hook the player events.
-`hookYouTubeEvents()` is idempotent — it removes old `onAdStart`/`onAdFinish`
-listeners before attaching new ones, so repeated navigations don't leak.
+Detach is followed by target inspection: a tab confirmed detached (or gone)
+can be reported `off`; a tab still attached is `blocked` because the owner is
+unknown. An unexpected detach or an unavailable debugger also produces a
+`blocked` state.
+
+
+### 4.5 Navigation Handling
+
+YouTube SPA navigation fires `yt-navigate-finish`. The content script forces a
+fresh ad-state report, stops the current heartbeat, and re-hooks player events;
+the next poll restarts the heartbeat if an ad is still playing. Player event
+listeners are removed before they are re-attached.
+
+A full document navigation is handled in the background by
+`tabs.onUpdated` with `status: "loading"`. This document boundary releases the
+tab's session and verifies its state.
 
 ### 4.7 Initialization Sequence
 
@@ -251,9 +253,18 @@ before the stored state is read.
     "date": "2026-07-10",       // string — YYYY-MM-DD date key
     "count": 0                  // number — skips for today
   },
-  "debugOverlay": false         // boolean — show debug overlay
+  "debugOverlay": false,        // boolean — show debug overlay
+  "cdp": {
+    "state": "off",            // "off" | "attached" | "blocked"
+    "reason": null,             // string | null
+    "at": 0                     // number — publication timestamp
+  }
 }
 ```
+
+The background writes `cdp` as an aggregate across tracked YouTube tabs. Any
+blocked tab wins; among blocked tabs, the greatest `blockedAt` wins, with ties
+resolved by the lowest `tabId`.
 
 ### Cross-context Communication
 
@@ -303,8 +314,12 @@ state indication, not the icon.
 | Mid-roll ad | Same detection, same handling. `onAdStart` fires reliably. |
 | Bumper ads (6s unskippable) | No skip button exists — cannot be skipped. Limitation. |
 | Ad pods (multiple ads) | Each ad triggers its own `onAdStart`/`onAdFinish` cycle |
-| SPA navigation during ad | `yt-navigate-finish` resets ad state |
-| User disables mid-ad | `disable()` clears state, no-op until re-enabled |
+| SPA navigation during ad | `yt-navigate-finish` forces a fresh ad-state report and player-event re-hook |
+| Worker restart mid-ad | Hydration reconciles/releases an existing debugger session; the hello report or next 2 s heartbeat reports the still-active ad and attaches again |
+| Full page navigation | `tabs.onUpdated` with `status: "loading"` marks a document boundary, releases the session, and verifies its state |
+| DevTools or another debugger holds the tab | Attach is blocked; the extension cannot identify the debugger owner |
+| Detach fails and target remains attached | State becomes `blocked` with owner unknown, never `off` while the target is still attached; if target inspection fails, the prior state is retained rather than claiming `off` |
+| User disables mid-ad | Background detaches and verifies the target; it does not report `off` while the target remains attached |
 | YouTube in background tab | Content script continues running — ad still skipped |
 | Embedded players | Out of scope — `host_permissions` scoped to `www.youtube.com` |
 | YouTube Shorts | Different player — detection likely won't match, gracefully no-ops |

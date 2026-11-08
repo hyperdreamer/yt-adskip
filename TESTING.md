@@ -2,7 +2,15 @@
 
 End-to-end testing of the CDP-based YouTube ad-skip extension.
 
-## Quick run
+## Unit tests
+
+```bash
+node --test tests/unit_cdp_session.mjs
+node --test tests/unit_status.mjs
+node --test tests/unit_background_adapter.mjs
+```
+
+## End-to-end run
 
 ```bash
 python3 tests/test_adskip.py
@@ -10,54 +18,43 @@ python3 tests/test_adskip.py
 
 ## Prerequisites
 
-- Python 3 + `playwright` (`pip install playwright`)
+- Python 3
+- `playwright` must be installed (`pip install playwright`)
 - Playwright Chromium (`python3 -m playwright install chromium`)
+
+`playwright` is not available in this development environment, so the
+end-to-end suite is unverified here.
 
 ## How it works
 
-The test script (`tests/test_adskip.py`) uses Playwright to:
+The script has a deterministic half and a best-effort live-ad half:
 
-1. Launch Chromium with the extension loaded via `launch_persistent_context`
-2. Navigate to YouTube videos in sequence
-3. Click the video player via CDP (`Input.dispatchMouseEvent`) to trigger pre-roll ads
-4. Monitor the extension's console output for the ad-skip pipeline
-5. Report success/failure
+1. Deterministic checks cover extension loading, hydration publishing `cdp`,
+   popup status states, and receipt of `adState` within 3 seconds.
+2. The live-ad check exercises a YouTube ad when one is served. When YouTube
+   serves no ad, the test prints exactly `SKIP: no ad served`.
 
 Test profiles are stored under `tests/profiles/` (git-ignored) for reuse across runs.
 
-## Expected output
+## No-ad output
 
-Successful run looks like:
+When no ad is served, the best-effort portion prints:
 
 ```
-Extension: .../yt-adskip/extension
-Profile:   .../yt-adskip/tests/profiles/pw-fresh
-Target: 10 successful CDP skips
-
-[1] dQw4w9WgXcQ 📺 ad ✅ SKIPPED (1/10)
-[2] 9bZkp7q19f0 📺 ad ✅ SKIPPED (2/10)
-[3] RgKAFK5djSk → next (no ad)
-...
-[7] fRh_vgS2dFE 📺 ad ✅ SKIPPED (10/10)
-
-DONE: 10/10 skips across 7 videos
+SKIP: no ad served
 ```
 
 ## What the test verifies
 
-1. Extension loads without errors
-2. Content script injects on YouTube pages
-3. `movie_player` is hooked
-4. Ad detection works (`📺 Ad #1 detected`)
-5. Skip button selectors match current YouTube DOM
-6. Background service worker receives message and attaches CDP
-7. `chrome.debugger.sendCommand` + `Input.dispatchMouseEvent` succeeds
-8. Ad ends naturally after click
+1. Extension loads and hydration publishes the `cdp` status.
+2. Popup renders its status states.
+3. The content script reports `adState` within 3 seconds.
+4. The best-effort live-ad check exercises the skip path when an ad is served; otherwise it prints exactly `SKIP: no ad served`.
 
 ## Known quirks
 
-- YouTube ad serving is inconsistent in automated Chrome. If no ad appears
-  across all videos, the extension may still work — YouTube is withholding
-  ads from the automated session.
+- YouTube ad serving is inconsistent in automated Chrome. If no ad appears,
+  the live-ad portion reports `SKIP: no ad served`; the deterministic checks
+  still run.
 - `--load-extension` on the plain Chrome CLI is silently ignored. Playwright's
   `launch_persistent_context` + `--disable-extensions-except` is required.
