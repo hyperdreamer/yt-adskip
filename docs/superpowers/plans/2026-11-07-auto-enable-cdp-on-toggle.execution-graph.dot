@@ -1,0 +1,22 @@
+digraph execution {
+  rankdir=LR;
+  node [shape=box, style=rounded];
+  T1 [label="T1\nsession-core #1\ntask 1"];
+  T2 [label="T2\nstatus #1\ntask 2"];
+  T3 [label="T3\nintegration #1\ntask 3"];
+  T4 [label="T4\ncontent #1\ntask 4"];
+  T5 [label="T5\nintegration #2\ntask 5"];
+  T6 [label="T6\ndocs #1\ntask 6"];
+  T1 -> T3 [label="depends"];
+  T3 -> T4 [label="depends"];
+  T3 -> T5 [label="depends"];
+  T2 -> T5 [label="depends"];
+  T4 -> T5 [label="depends"];
+  T1 -> T6 [label="depends"];
+  T2 -> T6 [label="depends"];
+  T3 -> T6 [label="depends"];
+  T4 -> T6 [label="depends"];
+  T5 -> T6 [label="depends"];
+  T1 -> T3 [label="cdp-session.createCdpSession", style=dashed, color=blue];
+  T2 -> T5 [label="status.deriveStatus", style=dashed, color=blue];
+}

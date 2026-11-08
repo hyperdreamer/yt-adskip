@@ -1,0 +1,120 @@
+schema_version: 1
+topic: auto-enable-cdp-on-toggle
+run_id: pm-run-20261107-114945-49cb7c72
+source_plan:
+  path: docs/superpowers/plans/2026-11-07-auto-enable-cdp-on-toggle.md
+  sha256: 3bdbb6388109ab03d3a4e1a4e9b9469cc8846de216102ed77daa1afc3b191286
+lanes:
+  - id: session-core
+    task_ids: [T1]
+  - id: status
+    task_ids: [T2]
+  - id: integration
+    task_ids: [T3, T5]
+  - id: content
+    task_ids: [T4]
+  - id: docs
+    task_ids: [T6]
+interfaces:
+  - name: cdp-session.createCdpSession
+    signature: "export function createCdpSession({adapter,timers,publish,now,graceMs}) -> CdpSession"
+    signature_sha256: e526d1f1db61cbca5d8b3e2916565e8cb520863b67fa55809ecbc76bb8487d41
+  - name: cdp-session.DETACH_GRACE_MS
+    signature: "export const DETACH_GRACE_MS = 1500"
+    signature_sha256: 7bc6a1f7130c6d0392fc07c478c3fb2e71d9ee6b72f5d80f0b6746b0d895e0f6
+  - name: status.deriveStatus
+    signature: "export function deriveStatus({enabled,cdp}) -> {state,word,reason}"
+    signature_sha256: 110e21897a04f0c9bdc5669d72eda0f952d59fbbc3229d95eb0c05331960c64c
+tasks:
+  - id: T1
+    plan_task: 1
+    title: "Implement the CDP session state machine and T1 tests"
+    lane: session-core
+    sequence: 1
+    depends_on: []
+    owns: ["extension/cdp-session.js", "tests/unit_cdp_session.mjs"]
+    resources: []
+    produces: [cdp-session.createCdpSession, cdp-session.DETACH_GRACE_MS]
+    consumes: []
+    validation:
+      - argv: ["node", "--check", "extension/cdp-session.js"]
+        cwd: worktree
+      - argv: ["node", "--test", "tests/unit_cdp_session.mjs"]
+        cwd: worktree
+  - id: T2
+    plan_task: 2
+    title: "Add the pure status view-model and T2 tests"
+    lane: status
+    sequence: 1
+    depends_on: []
+    owns: ["extension/status.js", "tests/unit_status.mjs"]
+    resources: []
+    produces: [status.deriveStatus]
+    consumes: []
+    validation:
+      - argv: ["node", "--check", "extension/status.js"]
+        cwd: worktree
+      - argv: ["node", "--test", "tests/unit_status.mjs"]
+        cwd: worktree
+  - id: T3
+    plan_task: 3
+    title: "Wire the background worker and hydration integration"
+    lane: integration
+    sequence: 1
+    depends_on: [T1]
+    owns: ["extension/background.js", "extension/manifest.json"]
+    resources: []
+    produces: []
+    consumes: [cdp-session.createCdpSession]
+    validation:
+      - argv: ["node", "--check", "extension/background.js"]
+        cwd: worktree
+      - argv: ["node", "--test", "tests/unit_cdp_session.mjs"]
+        cwd: worktree
+  - id: T4
+    plan_task: 4
+    title: "Move content lifecycle and click transport to messages"
+    lane: content
+    sequence: 1
+    depends_on: [T3]
+    owns: ["extension/content.js"]
+    resources: []
+    produces: []
+    consumes: []
+    validation:
+      - argv: ["node", "--check", "extension/content.js"]
+        cwd: worktree
+      - argv: ["node", "--test", "tests/unit_cdp_session.mjs"]
+        cwd: worktree
+  - id: T5
+    plan_task: 5
+    title: "Render popup status and complete browser E2E coverage"
+    lane: integration
+    sequence: 2
+    depends_on: [T3, T2, T4]
+    owns: ["extension/popup/**", "tests/test_adskip.py"]
+    resources: []
+    produces: []
+    consumes: [status.deriveStatus]
+    validation:
+      - argv: ["node", "--check", "extension/popup/popup.js"]
+        cwd: worktree
+      - argv: ["node", "--test", "tests/unit_status.mjs"]
+        cwd: worktree
+      - argv: ["node", "--test", "tests/unit_cdp_session.mjs"]
+        cwd: worktree
+  - id: T6
+    plan_task: 6
+    title: "Update architecture, user, and test documentation"
+    lane: docs
+    sequence: 1
+    depends_on: [T1, T2, T3, T4, T5]
+    owns: ["AGENTS.md", "README.md", "TESTING.md"]
+    resources: []
+    produces: []
+    consumes: []
+    validation:
+      - argv: ["node", "--check", "extension/cdp-session.js"]
+        cwd: worktree
+      - argv: ["node", "--test", "tests/unit_cdp_session.mjs", "tests/unit_status.mjs"]
+        cwd: worktree

@@ -6,6 +6,7 @@
   --accent: #3ea6ff;
   --accent-strong: #2b8fd6;
   --good: #2ecc71;
+  --warn: #f5a623;
   --border: #333333;
   --slider-bg: #444;
   --slider-knob: #fff;
@@ -22,6 +23,7 @@
     --accent: #065fd4;
     --accent-strong: #054ab3;
     --good: #0f9d58;
+    --warn: #f5a623;
     --border: #d9d9d9;
     --slider-bg: #ccc;
     --slider-knob: #fff;
@@ -197,3 +199,8 @@ html, body {
   font-variant-numeric: tabular-nums;
   font-weight: 500;
 }
+
+.status-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.status-word { font-size: 13px; }
+.status-text .sub { font-size: 11px; line-height: 1.35; color: var(--fg-muted); }
+.status.limited .dot { background: var(--warn); box-shadow: 0 0 6px rgba(245, 166, 35, 0.55); }

@@ -11,6 +11,7 @@
 
   const POLL_INTERVAL_MS = 250;
   const MIN_AD_BEFORE_SKIP_MS = 1000;
+  const AD_STATE_HEARTBEAT_MS = 2000;
 
   // ---------------------------------------------------------------------------
   // Diagnostics — enable debugOverlay in popup or set DEBUG=true for console
@@ -28,9 +29,13 @@
 
   let enabled = true;
   let pollTimer = null;
+  let heartbeatTimer = null;
   let adStartTime = 0;
   let initialized = false;
   let adsDetected = 0; // track this session
+  let inAd = null;
+  let forceNextAdStateReport = true;
+  let adStateFailureTracker = null;
 
   let adStartHandler = null;
   let adFinishHandler = null;
@@ -127,7 +132,7 @@
             } else if (!resp) {
               resolve({ ok: false, reason: 'no response from background' });
             } else if (!resp.ok) {
-              resolve({ ok: false, reason: 'bg error: ' + (resp.error || 'unknown') });
+              resolve({ ok: false, reason: 'bg error: ' + (resp.message || resp.error || 'unknown') });
             } else {
               resolve({ ok: true });
             }
@@ -140,15 +145,68 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Ad lifecycle message transport
+  // ---------------------------------------------------------------------------
+
+  function logAdStateTransportFailure(failureTracker, error) {
+    if (!failureTracker || failureTracker.logged) return;
+    failureTracker.logged = true;
+    WARN('adState transport failed', error);
+  }
+
+  function sendAdState(adPlaying) {
+    if (!enabled && adPlaying) return;
+    const failureTracker = adStateFailureTracker;
+    try {
+      const pending = chrome.runtime.sendMessage({ type: 'adskip:adState', inAd: adPlaying });
+      if (pending && typeof pending.catch === 'function') {
+        pending.catch(function (error) {
+          logAdStateTransportFailure(failureTracker, error);
+        });
+      }
+    } catch (e) {
+      logAdStateTransportFailure(failureTracker, e);
+    }
+  }
+
+  function startHeartbeat() {
+    if (heartbeatTimer !== null) return;
+    heartbeatTimer = setInterval(function () {
+      if (enabled && inAd === true) sendAdState(true);
+    }, AD_STATE_HEARTBEAT_MS);
+  }
+
+  function stopHeartbeat() {
+    if (heartbeatTimer === null) return;
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+
+  function pollAdState(forceReport) {
+    const previousInAd = inAd;
+    inAd = !!isAdPlaying();
+    if (inAd && previousInAd !== true) adStateFailureTracker = { logged: false };
+
+    if (forceReport || forceNextAdStateReport || previousInAd !== inAd) {
+      forceNextAdStateReport = false;
+      sendAdState(inAd);
+    }
+
+    if (inAd) startHeartbeat();
+    else stopHeartbeat();
+    return inAd;
+  }
+
+  // ---------------------------------------------------------------------------
   // Main loop
   // ---------------------------------------------------------------------------
 
   let cdpAttempted = false;
 
-  function trySkipAd() {
+  function trySkipAd(forceReport) {
     if (!enabled) return;
 
-    const adPlaying = isAdPlaying();
+    const adPlaying = pollAdState(forceReport);
     if (!adPlaying) {
       if (adStartTime) LOG('ad ended');
       adStartTime = 0;
@@ -222,15 +280,12 @@
     if (adFinishHandler) player.removeEventListener('onAdFinish', adFinishHandler);
 
     adStartHandler = function () {
-      if (!enabled) return;
-      adStartTime = Date.now();
-      cdpAttempted = false;
+      forceNextAdStateReport = true;
       LOG('🎬 onAdStart fired');
     };
     adFinishHandler = function () {
+      forceNextAdStateReport = true;
       LOG('🎬 onAdFinish fired');
-      adStartTime = 0;
-      cdpAttempted = false;
     };
 
     player.addEventListener('onAdStart', adStartHandler);
@@ -289,11 +344,14 @@
 
   function enable() {
     enabled = true;
+    forceNextAdStateReport = true;
     LOG('✅ enabled');
     if (!pollTimer) pollTimer = setInterval(trySkipAd, POLL_INTERVAL_MS);
   }
   function disable() {
     enabled = false;
+    forceNextAdStateReport = true;
+    stopHeartbeat();
     LOG('⏸ disabled');
     adStartTime = 0;
     cdpAttempted = false;
@@ -314,6 +372,13 @@
     });
   } catch (e) { WARN('onChanged error', e); }
 
+  try {
+    chrome.runtime.onMessage.addListener(function (message) {
+      if (!message || message.type !== 'adskip:hello' || !enabled) return;
+      trySkipAd(true);
+    });
+  } catch (e) { WARN('runtime message listener error', e); }
+
   // ---------------------------------------------------------------------------
   // Init
   // ---------------------------------------------------------------------------
@@ -327,8 +392,8 @@
 
     document.addEventListener('yt-navigate-finish', function () {
       LOG('🔄 yt-navigate-finish');
-      adStartTime = 0;
-      cdpAttempted = false;
+      forceNextAdStateReport = true;
+      stopHeartbeat();
       hookYouTubeEvents();
     });
   }

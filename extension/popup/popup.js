@@ -1,9 +1,15 @@
+import { deriveStatus } from "../status.js";
+
 /**
  * YT AdSkip - Popup Script
  *
  * Renders the toggle switch and live stats from chrome.storage.local.
  * Uses onChanged listener for instant updates instead of polling.
  */
+
+// null means "no storage read has completed yet": we must never render a status
+// we have not observed, or a toggle would claim Active over a blocked session.
+let currentCdp = null;
 
 (function () {
   'use strict';
@@ -14,7 +20,8 @@
   const labelEl  = $('enabled-label');
   const debugEl  = $('debugOverlay');
   const statusEl = $('status');
-  const statusText = $('status-text');
+  const wordEl = $('status-word');
+  const reasonEl = $('status-reason');
   const todayEl = $('stat-today');
   const totalEl = $('stat-total');
   const lastEl  = $('stat-last');
@@ -42,18 +49,21 @@
     return n.toLocaleString();
   }
 
+  function renderStatus(enabledFlag, cdp) {
+    const value = cdp || currentCdp;
+    if (!value) return; // nothing observed yet: leave the row untouched
+    const v = deriveStatus({ enabled: !!enabledFlag, cdp: value });
+    statusEl.classList.remove("active", "paused", "limited");
+    statusEl.classList.add(v.state);
+    wordEl.textContent = v.word;
+    if (v.reason) { reasonEl.textContent = v.reason; reasonEl.hidden = false; }
+    else { reasonEl.textContent = ""; reasonEl.hidden = true; }
+  }
+
   function applyEnabledState(flag) {
     toggleEl.checked = !!flag;
     labelEl.textContent = flag ? 'Enabled' : 'Disabled';
-    if (flag) {
-      statusEl.classList.remove('paused');
-      statusEl.classList.add('active');
-      statusText.textContent = 'Active';
-    } else {
-      statusEl.classList.remove('active');
-      statusEl.classList.add('paused');
-      statusText.textContent = 'Paused';
-    }
+    renderStatus(flag, currentCdp);
   }
 
   function renderStats(stats, today) {
@@ -63,12 +73,13 @@
   }
 
   function readState() {
-    chrome.storage.local.get(['enabled', 'stats', 'today', 'debugOverlay'], (data) => {
+    chrome.storage.local.get(['enabled', 'cdp', 'stats', 'today', 'debugOverlay'], (data) => {
       const lastError = chrome.runtime.lastError;
       if (lastError) {
         console.error('YT AdSkip: storage read failed', lastError);
         return;
       }
+      currentCdp = data && data.cdp ? data.cdp : { state: "off", reason: null, at: 0 };
       applyEnabledState(data && data.enabled !== false);
       debugEl.checked = !!(data && data.debugOverlay);
       renderStats(data && data.stats, data && data.today);
@@ -96,8 +107,11 @@
   // Listen for storage changes from content script (instant updates).
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes.enabled) applyEnabledState(changes.enabled.newValue);
-    if (changes.stats || changes.today) readState();
+    if (changes.cdp) currentCdp = changes.cdp.newValue || { state: "off", reason: null, at: 0 };
+    // Render synchronously from the value we just observed, so the row is never left
+    // showing the previous state while another storage read is in flight.
+    if (changes.cdp || changes.enabled) renderStatus(!!toggleEl.checked, currentCdp);
+    if (changes.enabled || changes.cdp || changes.stats || changes.today) readState();
   });
 
   // Slow periodic refresh only for the "last skip" relative time,
