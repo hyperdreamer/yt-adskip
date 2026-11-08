@@ -692,6 +692,12 @@ test("T1.35 blocked false, disable, and boundary publish off only after release"
     await operation;
     assert.equal(h.session.status(TAB).state, "off", path);
     assert.equal(h.session.status(TAB).reason, null, path);
+    const lastPublication = h.publications.at(-1);
+    assert.deepEqual(
+      lastPublication && { state: lastPublication.state, reason: lastPublication.reason },
+      { state: "off", reason: null },
+      path,
+    );
     assert.equal(countCalls(h, "listPageTarget", TAB), path === "boundary" ? 2 : 1, path);
   }
 });
