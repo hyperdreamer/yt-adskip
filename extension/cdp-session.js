@@ -363,13 +363,37 @@ export function createCdpSession({ adapter, timers, publish, now, graceMs = DETA
   async function handleDetach(tabId) {
     const record = getRecord(tabId);
     if (!record) return;
-    return enqueue(record, () => {
+    return enqueue(record, async () => {
       if (record.expectDetach) {
         record.expectDetach = false;
-        record.releaseUnverified = false;
         record.attempted = false;
         clearTimer(record);
-        setState(record, "off");
+        // An expected detach is confirmed by the release postcondition, never by the
+        // event alone: a previous verification read may have failed while the target
+        // stayed attached (audit round 2).
+        let pageTarget;
+        try {
+          pageTarget = await adapter.listPageTarget(record.tabId);
+        } catch {
+          if (isCurrent(record)) {
+            record.releaseUnverified = true;
+            setState(record, "blocked", REASON_OWNER_UNKNOWN);
+          }
+          return;
+        }
+        if (!isCurrent(record)) return;
+        if (pageTarget === null) {
+          record.releaseUnverified = false;
+          forget(record);
+          return;
+        }
+        if (pageTarget?.attached === false) {
+          record.releaseUnverified = false;
+          setState(record, "off");
+          return;
+        }
+        record.releaseUnverified = true;
+        setState(record, "blocked", REASON_OWNER_UNKNOWN);
         return;
       }
       if (record.state === "off" || record.state === "blocked") return;

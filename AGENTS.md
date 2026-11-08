@@ -79,7 +79,7 @@ yt-adskip/
 ```
 
 Key decisions:
-- **`permissions: ["storage", "debugger", "management"]`** — storage for toggle/state, debugger for CDP mouse events, management for listing conflicting extensions.
+- **`permissions: ["storage", "debugger", "management"]`** — storage for toggle/state, debugger for CDP mouse events, management for inspecting other installed extensions (the extension makes no such call today; see section 8).
 - **`background.service_worker`** — handles CDP attach/detach and `Input.dispatchMouseEvent`.
 - **`host_permissions`** — scoped to `www.youtube.com` only.
 - **`run_at: "document_idle"`** — ensures `#movie_player` and `<video>` are present.

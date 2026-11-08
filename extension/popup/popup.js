@@ -7,7 +7,9 @@ import { deriveStatus } from "../status.js";
  * Uses onChanged listener for instant updates instead of polling.
  */
 
-let currentCdp = { state: "off", reason: null, at: 0 };
+// null means "no storage read has completed yet": we must never render a status
+// we have not observed, or a toggle would claim Active over a blocked session.
+let currentCdp = null;
 
 (function () {
   'use strict';
@@ -48,7 +50,9 @@ let currentCdp = { state: "off", reason: null, at: 0 };
   }
 
   function renderStatus(enabledFlag, cdp) {
-    const v = deriveStatus({ enabled: !!enabledFlag, cdp: cdp || currentCdp });
+    const value = cdp || currentCdp;
+    if (!value) return; // nothing observed yet: leave the row untouched
+    const v = deriveStatus({ enabled: !!enabledFlag, cdp: value });
     statusEl.classList.remove("active", "paused", "limited");
     statusEl.classList.add(v.state);
     wordEl.textContent = v.word;
@@ -104,6 +108,9 @@ let currentCdp = { state: "off", reason: null, at: 0 };
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     if (changes.cdp) currentCdp = changes.cdp.newValue || { state: "off", reason: null, at: 0 };
+    // Render synchronously from the value we just observed, so the row is never left
+    // showing the previous state while another storage read is in flight.
+    if (changes.cdp || changes.enabled) renderStatus(!!toggleEl.checked, currentCdp);
     if (changes.enabled || changes.cdp || changes.stats || changes.today) readState();
   });
 

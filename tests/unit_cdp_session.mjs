@@ -771,3 +771,23 @@ test("T1.36 disable then re-enable between mouse events still aborts the third",
   await Promise.all([disabling, enabling]);
   assert.deepEqual(events, ["mouseMoved", "mousePressed"]);
 });
+
+test("T1.37 an expected detach is never reported off while the target stays attached", async () => {
+  const h = harness();
+  await attach(h);
+  // The release attempt fails to confirm: detach keeps the target attached and the
+  // verification read throws, so releaseUnverified is set (audit round 2, blocker 1).
+  h.detachPlans.push(() => ({ released: false, attachedAfter: true }));
+  h.pageOverrides.set(TAB, new Error("verify read failed"));
+  await h.session.setEnabled(false);
+  // Reads work again, and the target genuinely is still attached.
+  h.pageOverrides.delete(TAB);
+  assert.equal(h.targets.get(TAB)?.attached, true, "precondition: a live session remains");
+  // The expected onDetach event now arrives. It must not be trusted on its own.
+  await h.session.handleDetach(TAB);
+  assert.equal(
+    h.session.status(TAB).state,
+    "blocked",
+    "an unverified release must never be published as off",
+  );
+});
