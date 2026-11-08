@@ -23,7 +23,10 @@
 
       <section class="status" id="status">
         <span class="dot" id="status-dot" aria-hidden="true"></span>
-        <span class="status-text" id="status-text">Active</span>
+        <span class="status-text" id="status-text">
+          <span class="status-word" id="status-word">Active</span>
+          <span class="sub" id="status-reason" hidden></span>
+        </span>
       </section>
 
       <section class="toggle-row">
@@ -49,6 +52,6 @@
         </div>
       </section>
     </main>
-    <script src="popup.js"></script>
+    <script type="module" src="popup.js"></script>
   </body>
 </html>

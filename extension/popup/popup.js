@@ -1,3 +1,5 @@
+import { deriveStatus } from "../status.js";
+
 /**
  * YT AdSkip - Popup Script
  *
@@ -14,7 +16,8 @@
   const labelEl  = $('enabled-label');
   const debugEl  = $('debugOverlay');
   const statusEl = $('status');
-  const statusText = $('status-text');
+  const wordEl = $('status-word');
+  const reasonEl = $('status-reason');
   const todayEl = $('stat-today');
   const totalEl = $('stat-total');
   const lastEl  = $('stat-last');
@@ -42,18 +45,20 @@
     return n.toLocaleString();
   }
 
-  function applyEnabledState(flag) {
+  function renderStatus(enabledFlag, cdp) {
+    const v = deriveStatus({ enabled: !!enabledFlag,
+                              cdp: cdp || { state: "off", reason: null, at: 0 } });
+    statusEl.classList.remove("active", "paused", "limited");
+    statusEl.classList.add(v.state);
+    wordEl.textContent = v.word;
+    if (v.reason) { reasonEl.textContent = v.reason; reasonEl.hidden = false; }
+    else { reasonEl.textContent = ""; reasonEl.hidden = true; }
+  }
+
+  function applyEnabledState(flag, cdp) {
     toggleEl.checked = !!flag;
     labelEl.textContent = flag ? 'Enabled' : 'Disabled';
-    if (flag) {
-      statusEl.classList.remove('paused');
-      statusEl.classList.add('active');
-      statusText.textContent = 'Active';
-    } else {
-      statusEl.classList.remove('active');
-      statusEl.classList.add('paused');
-      statusText.textContent = 'Paused';
-    }
+    renderStatus(flag, cdp);
   }
 
   function renderStats(stats, today) {
@@ -63,13 +68,13 @@
   }
 
   function readState() {
-    chrome.storage.local.get(['enabled', 'stats', 'today', 'debugOverlay'], (data) => {
+    chrome.storage.local.get(['enabled', 'cdp', 'stats', 'today', 'debugOverlay'], (data) => {
       const lastError = chrome.runtime.lastError;
       if (lastError) {
         console.error('YT AdSkip: storage read failed', lastError);
         return;
       }
-      applyEnabledState(data && data.enabled !== false);
+      applyEnabledState(data && data.enabled !== false, data && data.cdp);
       debugEl.checked = !!(data && data.debugOverlay);
       renderStats(data && data.stats, data && data.today);
     });
@@ -96,8 +101,7 @@
   // Listen for storage changes from content script (instant updates).
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    if (changes.enabled) applyEnabledState(changes.enabled.newValue);
-    if (changes.stats || changes.today) readState();
+    if (changes.enabled || changes.cdp || changes.stats || changes.today) readState();
   });
 
   // Slow periodic refresh only for the "last skip" relative time,

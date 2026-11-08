@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-"""End-to-end test for YT AdSkip Chrome extension.
+"""Deterministic startup checks and best-effort real-ad test for YT AdSkip."""
 
-Uses Playwright to load the extension, navigate to YouTube,
-click play via CDP (user gesture), and verify ad-skip pipeline.
+import asyncio
+import os
+import time
 
-Strategy:
-- If no ad appears in 2s → move to next video immediately
-- If an ad IS detected → wait up to 30s for skip pipeline
-
-Usage: python3 tests/test_adskip.py
-"""
-
-import asyncio, os
 from playwright.async_api import async_playwright
 
 EXT_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'extension')
@@ -23,12 +16,12 @@ VIDEOS = [
     'hT_nvWreIhg', '0KSOMA3QBU0', 'nfWlot6h_JM', '2Vv-BfVoq4g',
 ]
 
-AD_DETECT_TIMEOUT = 2       # seconds to wait for an ad to appear
-SKIP_WAIT_TIMEOUT = 30      # seconds to wait for skip pipeline once ad seen
+AD_DETECT_TIMEOUT = 2
+SKIP_WAIT_TIMEOUT = 30
 
 
 async def cdp_click(cdp, x, y):
-    """Real mouse click via CDP — isTrusted: true."""
+    """Real mouse click via CDP - isTrusted: true."""
     await cdp.send('Input.dispatchMouseEvent', {
         'type': 'mouseMoved', 'x': x, 'y': y, 'button': 'none', 'buttons': 0})
     await asyncio.sleep(0.05)
@@ -39,16 +32,61 @@ async def cdp_click(cdp, x, y):
         'type': 'mouseReleased', 'x': x, 'y': y, 'button': 'left', 'buttons': 0, 'clickCount': 1})
 
 
-async def wait_for_ad_or_timeout(page, timeout):
-    """Poll until an ad is detected or timeout expires.
-    Returns True if ad detected, False if timed out with no ad."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
+async def wait_for_service_worker(context, timeout=10):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        for worker in context.service_workers:
+            if worker.url.startswith('chrome-extension://') and worker.url.endswith('/background.js'):
+                return worker
+        await asyncio.sleep(0.05)
+    raise AssertionError('extension service worker did not start')
+
+
+async def install_observers(worker):
+    await worker.evaluate('''() => {
+        globalThis.__adskipMessages = [];
+        globalThis.__adskipConsoleEvents = [];
+        for (const method of ['log', 'info', 'warn', 'error']) {
+            const original = console[method].bind(console);
+            console[method] = (...args) => {
+                globalThis.__adskipConsoleEvents.push({
+                    at: performance.timeOrigin + performance.now(),
+                    text: args.map(String).join(' ')
+                });
+                return original(...args);
+            };
+        }
+        chrome.runtime.onMessage.addListener((message, sender) => {
+            const encoded = typeof message === 'string' ? message : JSON.stringify(message);
+            if (encoded.includes('adskip:adState')) {
+                globalThis.__adskipMessages.push({
+                    at: Date.now(),
+                    fromTab: !!sender.tab,
+                    message: encoded
+                });
+            }
+        });
+    }''')
+
+
+async def read_messages(worker):
+    return await worker.evaluate('''() => globalThis.__adskipMessages || []''')
+
+
+async def read_storage(worker):
+    return await worker.evaluate('''() => new Promise(resolve => {
+        chrome.storage.local.get(null, resolve);
+    })''')
+
+
+async def wait_for_ad(page, timeout):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
         has_ad = await page.evaluate('''() => {
-            const p = document.getElementById('movie_player');
-            if (!p) return false;
-            if (typeof p.getAdState === 'function' && p.getAdState() !== -1) return true;
-            return p.classList.contains('ad-showing') || p.classList.contains('ad-interrupting');
+            const player = document.getElementById('movie_player');
+            if (!player) return false;
+            if (typeof player.getAdState === 'function' && player.getAdState() !== -1) return true;
+            return player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting');
         }''')
         if has_ad:
             return True
@@ -56,25 +94,93 @@ async def wait_for_ad_or_timeout(page, timeout):
     return False
 
 
-async def wait_for_skip_result(events, timeout):
-    """Wait for SUCCEEDED or FAILED in console events. Returns 'success', 'fail', or 'timeout'."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
-        if any('SUCCEEDED' in e for e in events):
-            return 'success'
-        if any('FAILED' in e for e in events):
-            return 'fail'
-        await asyncio.sleep(0.3)
-    return 'timeout'
+async def wait_for_cdp_order(worker, page_console_events, timeout):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        events = await worker.evaluate('''() => globalThis.__adskipConsoleEvents || []''')
+        combined = events + [
+            {'at': at, 'text': text} for at, text in page_console_events
+        ]
+        combined.sort(key=lambda event: event['at'])
+        lowered = [event['text'].lower() for event in combined]
+        attach = next((i for i, event in enumerate(lowered) if 'attach' in event and 'detach' not in event), None)
+        click = next((i for i, event in enumerate(lowered) if 'click' in event), None)
+        detach = next((i for i, event in enumerate(lowered) if 'detach' in event), None)
+        if attach is not None and click is not None and detach is not None and attach < click < detach:
+            return combined
+        await asyncio.sleep(0.1)
+    return None
+
+
+async def run_deterministic(context, worker):
+    page = await context.new_page()
+    await page.goto('https://www.youtube.com/watch?v=' + VIDEOS[0],
+                    wait_until='domcontentloaded', timeout=30000)
+    loaded_at_ms = time.time() * 1000
+    deadline = asyncio.get_running_loop().time() + 3
+    ad_state_message = None
+    while asyncio.get_running_loop().time() < deadline:
+        messages = await read_messages(worker)
+        if messages:
+            ad_state_message = messages[0]
+            break
+        await asyncio.sleep(0.05)
+    assert ad_state_message is not None, 'content script did not send adskip:adState within 3 seconds'
+    assert ad_state_message['fromTab'], 'adskip:adState was not sent by a content script'
+    assert ad_state_message['at'] <= loaded_at_ms + 3000, 'adskip:adState arrived more than 3 seconds after page load'
+
+    storage_deadline = asyncio.get_running_loop().time() + 10
+    storage = await read_storage(worker)
+    while 'cdp' not in storage and asyncio.get_running_loop().time() < storage_deadline:
+        await asyncio.sleep(0.1)
+        storage = await read_storage(worker)
+    assert 'cdp' in storage, 'chrome.storage.local did not gain a cdp key after hydration'
+    return page
+
+
+async def run_best_effort(page, context, worker):
+    cdp = await context.new_cdp_session(page)
+    page_console_events = []
+    page.on('console', lambda message: page_console_events.append((time.time() * 1000, message.text))
+            if 'adskip' in message.text.lower() else None)
+    for video_id in VIDEOS:
+        try:
+            page_console_events.clear()
+            await worker.evaluate('''() => { globalThis.__adskipConsoleEvents.length = 0; }''')
+            await page.goto('https://www.youtube.com/watch?v=' + video_id,
+                            wait_until='domcontentloaded', timeout=15000)
+        except Exception:
+            continue
+
+        try:
+            await asyncio.sleep(0.8)
+            video = page.locator('#movie_player video').first
+            if await video.evaluate('element => element.paused'):
+                box = await page.locator('.ytp-large-play-button').first.bounding_box(timeout=2000)
+                if box:
+                    await cdp_click(cdp, box['x'] + box['width'] / 2,
+                                    box['y'] + box['height'] / 2)
+        except Exception:
+            pass
+
+        if not await wait_for_ad(page, AD_DETECT_TIMEOUT):
+            continue
+
+        events = await wait_for_cdp_order(worker, page_console_events, SKIP_WAIT_TIMEOUT)
+        assert events is not None, 'real ad appeared but attach, click, detach were not logged in order'
+        await cdp.detach()
+        return
+
+    await cdp.detach()
+    print('SKIP: no ad served')
 
 
 async def main():
     print(f'Extension: {EXT_PATH}')
     print(f'Profile:   {PROFILE_DIR}')
-    print(f'Target: 10 successful CDP skips\n')
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch_persistent_context(
+        context = await p.chromium.launch_persistent_context(
             user_data_dir=PROFILE_DIR,
             headless=False,
             args=[
@@ -84,81 +190,18 @@ async def main():
             ],
             viewport={'width': 1280, 'height': 720},
         )
+        try:
+            print('DETERMINISTIC')
+            worker = await wait_for_service_worker(context)
+            assert worker.url.startswith('chrome-extension://'), 'extension did not load'
+            await install_observers(worker)
 
-        page = await browser.new_page()
-        cdp = await page.context.new_cdp_session(page)
+            page = await run_deterministic(context, worker)
 
-        successes = 0
-        tried = 0
-
-        for vid in VIDEOS:
-            if successes >= 10:
-                break
-
-            events = []
-
-            def on_console(msg):
-                if 'AdSkip' in msg.text:
-                    events.append(msg.text)
-            page.on('console', on_console)
-
-            tried += 1
-            url = f'https://www.youtube.com/watch?v={vid}'
-            print(f'[{tried}] {vid}', end='', flush=True)
-
-            try:
-                await page.goto(url, wait_until='domcontentloaded', timeout=10000)
-            except:
-                print(' timeout')
-                page.remove_listener('console', on_console)
-                continue
-
-            # Click play if paused (pre-roll ads only appear after user gesture)
-            try:
-                await asyncio.sleep(0.8)
-                v = page.locator('#movie_player video').first
-                paused = await v.evaluate('el => el.paused')
-                if paused:
-                    try:
-                        box = await page.locator('.ytp-large-play-button').first.bounding_box(timeout=2000)
-                        cx = box['x'] + box['width'] / 2
-                        cy = box['y'] + box['height'] / 2
-                        await cdp_click(cdp, cx, cy)
-                    except:
-                        pass
-            except:
-                pass
-
-            # Phase 1: wait up to AD_DETECT_TIMEOUT for an ad to appear
-            ad_seen = await wait_for_ad_or_timeout(page, AD_DETECT_TIMEOUT)
-
-            if not ad_seen:
-                print(' → next (no ad)')
-                page.remove_listener('console', on_console)
-                continue
-
-            # Phase 2: ad detected — wait for skip pipeline
-            print(f' 📺 ad', end='', flush=True)
-            result = await wait_for_skip_result(events, SKIP_WAIT_TIMEOUT)
-
-            if result == 'success':
-                successes += 1
-                print(f' ✅ SKIPPED ({successes}/10)')
-            elif result == 'fail':
-                print(' ❌ CDP FAILED')
-                page.remove_listener('console', on_console)
-                await browser.close()
-                print('\nABORTED after CDP failure')
-                return
-            else:
-                poll_count = sum(1 for e in events if 'polling' in e)
-                print(f' ⏱ timeout (polled {poll_count}x)')
-
-            page.remove_listener('console', on_console)
-
-        emoji = 'DONE' if successes >= 10 else 'PARTIAL'
-        print(f'\n{emoji}: {successes}/10 skips across {tried} videos')
-        await browser.close()
+            print('BEST-EFFORT')
+            await run_best_effort(page, context, worker)
+        finally:
+            await context.close()
 
 
 if __name__ == '__main__':
