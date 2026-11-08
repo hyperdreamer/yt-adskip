@@ -31,7 +31,8 @@ clicked like a real user would.
 - The extension starts **enabled** by default. No interaction required.
 - Click the toolbar icon to open the popup:
   - **Toggle** — enable / disable the auto-skip.
-  - **Status** — green dot = active, gray dot = paused.
+  - **Status** — green **Active**, amber **Limited** with a reason when CDP is
+    blocked, gray **Paused** when disabled.
   - **Stats** — skips today, total skips, and time since the last skip.
 - The state is stored in `chrome.storage.local` and persists across browser
   restarts.
@@ -45,11 +46,13 @@ clicks are ignored. The extension uses CDP to generate real mouse events:
    `#movie_player` plus CSS class checks (`ad-showing`, `ad-interrupting`).
    Also hooks YouTube's `onAdStart`/`onAdFinish` player events.
 
-2. **CDP click** — The content script finds the skip button, computes its
-   viewport center coordinates, and sends them to the background service
-   worker. The background worker attaches `chrome.debugger`, dispatches
-   `mouseMoved` → `mousePressed` → `mouseReleased`, then detaches. These
-   events have `isTrusted: true` — YouTube accepts them as real user clicks.
+2. **CDP session and click** — When an ad-state report says an ad has
+   started, the background attaches CDP and keeps the session open through the
+   ad pod. When the skip button appears, the content script sends its viewport
+   center coordinates and waits for a response. The background dispatches
+   `mouseMoved` → `mousePressed` → `mouseReleased` on the open session. After
+   the ad ends, a 1.5-second grace period absorbs pod rollover before the
+   background detaches and verifies the session.
 
 3. **Ad ends naturally** — No video manipulation needed. The ad finishes
    as if the user clicked Skip themselves.
@@ -89,7 +92,7 @@ YT AdSkip runs entirely on your machine. It:
 - Does not make any network requests.
 - Does not collect, store, or transmit any data off your device.
 - Only reads from `chrome.storage.local` and writes to the keys `enabled`,
-  `stats`, `today`, and `debugOverlay`.
+  `stats`, `today`, `debugOverlay`, and `cdp`.
 - Only runs on `https://www.youtube.com/*`.
 
 ## Limitations
